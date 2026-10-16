@@ -13,9 +13,10 @@
 | Qwen Code 0.25.2 | projects 下的 ChatRecord JSONL | `sessions list --json` 发现两个真实导入会话；完整历史已通过适配器回读，未验证模型续聊 |
 | Claude Code 2.1.301 | projects 下的 JSONL transcript | 官方 Claude Agent SDK 0.3.301 的 `listSessions`、`getSessionMessages` 读取真实导入对话；未执行交互续聊 |
 | WorkBuddy 5.7.6.40488862 | `projects/<slug>/<id>.jsonl` + `workbuddy.db` + 最近会话缓存 | 官方发布包原生数据库 repository 的 list/get、历史 `resolveReplayHistory` 读取真实导入；未登录 GUI 或调用模型 |
+| Antigravity CLI 1.4.0 Windows x64 | `conversations/<uuid>.db` + SQLite 摘要索引、protobuf 列表缓存、标题注释 | 官方发布包恢复真实 Pi 对话；本机 Gemini HTTP 模拟服务收到历史并返回固定响应，原生续聊落盘、原标题、工作目录回读通过；没有外部模型推理 |
 
-以上检查区分 **格式解析、原生读取、模型续聊**。本次没有向任何模型发送请求，不承诺所有未来客户端版本兼容。
-Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完整使用 MIT 协议开源，不分发这些客户端。
+以上检查区分 **格式解析、原生读取、模型续聊**。Antigravity 的续聊检查使用本机模拟服务，其他原生检查未发送对话轮次；均未向外部模型发送私人对话。不承诺所有未来客户端版本兼容。
+Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本仓库自身完整使用 MIT 协议开源，不分发这些客户端。
 
 ## 真实数据验证结果
 
@@ -26,6 +27,8 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 - 另一次已保留的真实 Codex → Pi 复制：353 条用户/助手消息、29 个摘要；文本和摘要序列 hash 一致，原文件 hash 未变。Pi 根据最新摘要构建续聊上下文。
 - 标题/模型修复后，同一份 Pi 目标保留原 ID，原生 `getSessionName()` 返回原 Codex 标题；353 条消息、29 个摘要保持不变，5 条有效续聊消息的内容 hash 一致。原生上下文模型改为目标 Pi 默认值，源 Codex 文件 hash 未变；桥接 manifest 的目标 hash 同步更新。额外启动已安装 Pi 的 RPC `get_state`，确认原标题、目标默认模型、5 条上下文且未 streaming；启动输出未出现模型恢复警告。仍未调用模型。
 - 单元测试使用不含私人信息的合成 fixtures；真实原生验证在忽略目录执行，私人对话不进入仓库。
+- Antigravity 新增 **30 条真实上下文路线**：真实 Codex、Pi 来源各覆盖七种格式到 Antigravity、Antigravity 到八种格式。后者共 **16 条原生剪切**，检查所选 DB、标题注释、manifest、protobuf 缓存项删除及其他会话 ID 不变；两个真实源文件 SHA-256 均不变。
+- 另用真实 Pi 迁移副本在 Windows CLI 1.4.0 续聊：本机服务收到历史，客户端持久化固定响应。恢复前后的标题、工作目录一致，源 hash 不变。该检查验证原生历史请求与写回，不验证真实供应商认证、模型推理或桌面 GUI。
 
 ## 数据库与删除规则
 
@@ -38,13 +41,25 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 - 原生 OpenCode 来源通过 DB 快照映射为虚拟路径 `.../opencode.db/<session-id>`；剪切删除的是 DB 会话。显式输入官方 export JSON 时只操作该文件。
 - 数据库事务配合源文件临时重命名、缓存原子替换。普通异常会回滚；源后续清理失败时保留已完成的目标并报告错误。多个文件和 DB 之间不具备跨进程、断电级原子性；停止源客户端后再剪切。
 - Claude 已知 sessions-index/history、桥接自己的 manifest 随选中会话清理。未识别的第三方缓存、备份和共享附件不递归删除。
+- Antigravity 仅处理 CLI SQLite：每会话 DB 剪切后移除，按 ID 删除 `conversation_summaries` 行、`jetbox_summaries_proto.pb` 对应 map 项、`cache/last_conversations.json` 对应值和 `annotations/<id>.pbtxt`。共享索引库、其他 ID、brain 工件/日志及备份保留。缓存替换与 SQLite 事务协作回滚；活动客户端 presence 锁或会话 WAL/SHM/journal 阻止原生修改/剪切，读取和复制仍支持一致的 WAL 快照。
+
+## Antigravity 的格式边界
+
+- 编解码复用固定依赖的 Antigravity CLI 1.1.16 SQLite/protobuf 子集；原生集成另以官方 Windows **1.4.0** 发布包核验。未改动依赖的可执行文件哈希 gate，也未调用其仅支持 Linux 1.1.16 的安装器。
+- 写入使用已观测到的 SQLite `user_version=1`。缺失该标记会让客户端运行旧格式迁移，清空导入的 trajectory 元数据；真实恢复验证覆盖了这一差异。
+- 工作目录写入 `CortexTrajectoryMetadata.workspaces`（1）和 `workspace_uris`（7）；用 `Path.from_uri` 读取 SQLite 索引 URI，正确处理 Windows 盘符。1.4.0 索引新增可空 `raw_summary` 和带默认值的 `group_id`；未知必需字段拒绝写入。
+- `CascadeTrajectorySummary` 列表缓存写入标题注释、时间、步数、trajectory ID 和工作目录元数据；原标题同时写入权威的 `annotations/<conversation-id>.pbtxt`。只写 SQL 标题会在原生恢复后丢失，真实客户端检查已覆盖。
+- 固定依赖的 SQLite context manager 不关闭连接，导致 Windows 临时 DB 无法删除。本地仅给该 codec 的 SQLite binding 使用退出时关闭的 Connection；其余格式和 schema/protobuf 校验保持原行为。
+- 独立 `.db` 本身不保存 UI 标题。桥接只在 apply 后的 manifest 保存标题和 cwd；预览保持无正文、无标题。移动便携输出时需同时保留该 manifest。
+- 没有原生压缩边界的目标将摘要改为标注的用户上下文，计入 `compaction:converted_to_user_context`；图片、工具、思考和运行状态不写入。
+- 桌面版与 CLI 存储分离。官方 CLI `/resume` 的 **Antigravity** 标签可以把桌面会话克隆到 CLI；本工具随后转换该 CLI 副本。**不直接读写桌面旧 `.pb`、加密会话或桌面索引；剪切 CLI 副本不会删除桌面原会话。**
 
 ## 格式与损失
 
 - 默认保留用户/助手文本、摘要及目标可表示的用户图片。工具调用/结果、思考、系统与运行记录在序列化前过滤，`filtered:*` 合并进 manifest 丢弃计数。
 - Codex 原生标题从按 ID、rollout_path 匹配的 threads 行读取，优先 name，再 title；未命中时保留日志标题。Pi 写 session_info，DSH/Claude/Qwen/WorkBuddy 写各自标题记录，OpenCode 写 session.title，Codex 原生目标写 threads 的 title/name。Codex 便携输出仍由上游适配器计入 session:title 损失。
 - 源 Session.model / model_provider 清空后才传入序列化器。Pi 0.87.1 会从每条历史助手消息恢复模型，即使不存在 model_change；完全删字段仍会产生无效恢复目标。因此 Pi 使用目标 home/settings.json 和 cwd/.pi/settings.json 的默认 provider/model，显式 CLI 标识优先；无完整目标值时在写入前失败。源 thinking_level_change 被过滤，续聊推理设置由 Pi 自身决定。其他格式的必需历史字段使用格式占位值或显式目标标识。
-- manifest 的来源摘要、SHA-256 对应原文件；数据库来源使用所选会话的稳定 JSON 快照，不是整个数据库文件 hash。
+- manifest 的来源统计、SHA-256 对应原文件；OpenCode 数据库来源使用所选会话的稳定 JSON 快照，Antigravity 使用包含 WAL 的一致 SQLite 备份快照。不会用共享索引 DB 的整体 hash 代替单个会话校验。
 - Pi 的额外 system/bashExecution/custom 运行记录经过边界适配后过滤；分支/压缩摘要保留，未选中的分支不重新加入上下文。
 - DSH 写入借用 Pi 的对话归并，再建立 turn/step 生命周期；摘要通过 surface replacement 更新模型上下文。DSH、WorkBuddy 暂不迁移图片 blob。
 - DSH 多个物理 generation 时拒绝剪切，避免旧版复活；桥接 manifest 不作为 generation。未知必需事件、损坏日志和不支持版本明确失败，不截断修复。
@@ -68,9 +83,13 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 | [OpenCode 开发分支的重构](https://github.com/anomalyco/opencode/tree/d7d44a7e03a9a390a3b66d1da8bb59aa03b65f9e/packages/core/src/session) | 识别 session_v2 版本差异，避免混写 |
 | [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) | 官方会话列表与消息读取函数，使用发布版 0.3.301 |
 | [WorkBuddy 官网](https://www.workbuddy.ai/) | 官方 Windows 发布包 5.7.6.40488862；从发布包只读核对迁移 SQL、路径规则和历史回放 |
+| [Antigravity CLI 官方会话说明](https://antigravity.google/docs/cli/conversations) / [resume](https://antigravity.google/docs/cli/commands/resume) | 工作区作用域、CLI 会话目录与桌面会话克隆入口 |
+| [Antigravity CLI 1.4.0 官方发布](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.4.0) | Windows 包运行时核对 SQLite version、摘要字段与 annotations 路径；发布包内 protobuf 描述及原生写回交叉验证 wire 字段 |
+| [固定 Antigravity codec 源码](https://github.com/xhluca/session-migrate/blob/a3b0fae4a38bbe0c0c89876f2f2ee6ee0ad154c4/src/session_migrate/formats/antigravity.py) / [原生测试](https://github.com/xhluca/session-migrate/blob/a3b0fae4a38bbe0c0c89876f2f2ee6ee0ad154c4/tests/test_antigravity_native.py) | SQLite/protobuf 基础 schema、损失计数和离线 Gemini 原生验证方法 |
 | [Scoop WorkBuddy 分发说明](https://github.com/ScoopInstaller/Extras/blob/master/bucket/workbuddy.json) | 官方安装包地址、解包结构和 SHA-256 交叉核对 |
 
 WorkBuddy 官方安装包 SHA-256：`b4ed6c44dcfb480318cdf1fbb4874545a56403dac87c8f9b9d6ac451e88d8f15`。
+Antigravity CLI 1.4.0 Windows x64 ZIP SHA-256：`bcb0af25a19da704f9b70f1fd84a983e49e81b70534d32c4bf14328e4f2ead9b`，与官方 release asset digest 核对。
 未执行网上的第三方迁移 skill，也未将客户端二进制或闭源代码放入本仓库。
 
 研究过的替代方案：[UniSessions](https://github.com/kyle0r/ai-agent-session-export) 提供会话导出与 SDK；

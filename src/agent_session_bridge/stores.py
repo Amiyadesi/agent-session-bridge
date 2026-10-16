@@ -21,6 +21,8 @@ from pathlib import Path
 from session_migrate.errors import SessionMigrateError
 from session_migrate.formats import opencode
 
+from agent_session_bridge import antigravity
+
 
 def quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
@@ -98,7 +100,10 @@ def database(kind: str, home: Path) -> Path:
         if candidates:
             return max(candidates)[1]
         raise SessionMigrateError("Codex state DB missing; start Codex once in the target home")
-    path = home / ("workbuddy.db" if kind == "workbuddy" else "opencode.db")
+    path = home / {
+        "workbuddy": "workbuddy.db", "opencode": "opencode.db",
+        "antigravity": "conversation_summaries.db",
+    }[kind]
     if not path.is_file():
         raise SessionMigrateError(f"{kind} DB missing; initialize the client in the target home")
     return path
@@ -106,6 +111,10 @@ def database(kind: str, home: Path) -> Path:
 
 def descriptor(kind: str, home: Path, *, user_id: str | None = None) -> dict:
     db = database(kind, home)
+    if kind == "antigravity":
+        with connection(db) as c:
+            antigravity.validate_summary(c)
+        return {"kind": kind, "home": str(home.resolve()), "database": str(db.resolve())}
     table = {"codex": "threads", "workbuddy": "sessions", "opencode": "session"}[kind]
     with connection(db) as c:
         require(c, table, {"id", "cwd"} if kind != "opencode" else {"id", "directory"})
@@ -136,6 +145,10 @@ def descriptor(kind: str, home: Path, *, user_id: str | None = None) -> dict:
 def source_store(session) -> dict | None:
     kind, path = session.source_format.value, session.source_path
     if kind == "opencode" and path.parent.name == "opencode.db" and path.parent.is_file():
+        return descriptor(kind, path.parent.parent)
+    if kind == "antigravity" and path.parent.name == "conversations":
+        if path.name != f"{session.session_id}.db":
+            raise SessionMigrateError("Antigravity DB filename does not match selected session")
         return descriptor(kind, path.parent.parent)
     if kind not in {"codex", "workbuddy"}:
         return None
@@ -183,6 +196,9 @@ def register(store: dict, manifest: dict, payload: bytes, source) -> None:
     sid, cwd = target["session_id"], target["cwd"]
     now, created = int(time.time() * 1000), _ms(source.started_at)
     title = source.title or "Imported conversation"
+    if kind == "antigravity":
+        _register_antigravity(store, target, payload, title, now)
+        return
     with connection(Path(store["database"]), write=True) as c:
         if kind == "codex":
             meta = json.loads(payload.splitlines()[0])["payload"]
@@ -320,6 +336,47 @@ def register(store: dict, manifest: dict, payload: bytes, source) -> None:
             raise SessionMigrateError("native index registration read-back failed")
 
 
+def _register_antigravity(store, target, payload, title, now):
+    antigravity.ensure_store_closed(Path(store["home"]))
+    codec = antigravity.native
+    values = codec._summary_values(
+        session_id=target["session_id"], title=title, preview="",
+        step_count=codec.native_record_count(payload),
+        timestamp=datetime.fromtimestamp(now / 1000).astimezone().isoformat(),
+        cwd=Path(target["cwd"]), last_user_input_index=codec._last_user_input_index(payload),
+    )
+    values = dict(zip(codec._SUMMARY_COLUMNS, values, strict=True))
+    values["raw_summary"] = antigravity.raw_summary(payload, values)
+    cache = Path(store["home"]) / "jetbox_summaries_proto.pb"
+    original = cache.read_bytes() if cache.exists() else None
+    updated = antigravity.summary_cache(
+        original or b"", target["session_id"], values["raw_summary"]
+    )
+    written = False
+    try:
+        with connection(Path(store["database"]), write=True) as c:
+            antigravity.validate_summary(c)
+            insert(c, "conversation_summaries", values)
+            if (cache.read_bytes() if cache.exists() else None) != original:
+                raise SessionMigrateError(
+                    "Antigravity cache changed; close the target client and retry"
+                )
+            _replace(cache, updated)
+            written = True
+            if not c.execute(
+                "SELECT 1 FROM conversation_summaries WHERE conversation_id=?",
+                (target["session_id"],),
+            ).fetchone():
+                raise SessionMigrateError("native index registration read-back failed")
+    except BaseException:
+        if written and cache.read_bytes() == updated:
+            if original is None:
+                cache.unlink()
+            else:
+                _replace(cache, original)
+        raise
+
+
 def opencode_paths(home: Path) -> list[Path]:
     db = Path(descriptor("opencode", home)["database"])
     with connection(db) as c:
@@ -371,6 +428,16 @@ def load_opencode(path: Path):
 
 def _delete_rows(c, store: dict, sid: str, path: Path | None = None) -> None:
     kind = store["kind"]
+    if kind == "antigravity":
+        antigravity.validate_summary(c)
+        expected = Path(store["home"]) / "conversations" / f"{sid}.db"
+        if path is None or not same_path(expected, path):
+            raise SessionMigrateError("Antigravity DB path does not match selected transcript")
+        if c.execute(
+            "DELETE FROM conversation_summaries WHERE conversation_id=?", (sid,)
+        ).rowcount != 1:
+            raise SessionMigrateError("source native index row missing; source retained")
+        return
     table = {"codex": "threads", "workbuddy": "sessions", "opencode": "session"}[kind]
     row = c.execute(f"SELECT * FROM {table} WHERE id=?", (sid,)).fetchone()
     if row is None:
@@ -425,6 +492,24 @@ def _caches(session, store: dict | None) -> list[tuple[Path, bytes, bytes]]:
             value = json.loads(original)
             value["sessions"] = [r for r in value["sessions"] if r["conversationId"] != sid]
             changes.append((p, original, (json.dumps(value, ensure_ascii=False) + "\n").encode()))
+    elif kind == "antigravity" and home:
+        cache = home / "jetbox_summaries_proto.pb"
+        if cache.exists():
+            original = cache.read_bytes()
+            updated = antigravity.summary_cache(original, sid)
+            if updated != original:
+                changes.append((cache, original, updated))
+        p = home / "cache" / "last_conversations.json"
+        if p.exists():
+            original = p.read_bytes()
+            value = json.loads(original)
+            if not isinstance(value, dict) or not all(isinstance(v, str) for v in value.values()):
+                raise SessionMigrateError("invalid Antigravity last_conversations cache")
+            updated = {key: value for key, value in value.items() if value != sid}
+            if updated != value:
+                changes.append(
+                    (p, original, (json.dumps(updated, ensure_ascii=False) + "\n").encode())
+                )
     elif kind == "claude":
         for parent in session.source_path.parents:
             if parent.name == "projects":
@@ -469,11 +554,12 @@ def remove_source(session) -> None:
     written = []
     try:
         with connection(Path(store["database"]), write=True) if store else _no_database() as c:
-            data = (
-                opencode_bytes(session.source_path, c)
-                if virtual
-                else session.source_path.read_bytes()
-            )
+            if virtual:
+                data = opencode_bytes(session.source_path, c)
+            elif session.source_format.value == "antigravity":
+                data = antigravity.move_bytes(session.source_path)
+            else:
+                data = session.source_path.read_bytes()
             if hashlib.sha256(data).hexdigest() != session.source_sha256:
                 raise SessionMigrateError(
                     "source changed during conversion; target kept, source retained"
@@ -484,6 +570,12 @@ def remove_source(session) -> None:
                 )
             if not virtual:
                 paths = [session.source_path]
+                if session.source_format.value == "antigravity" and store:
+                    annotation = antigravity.annotation_path(
+                        Path(store["home"]), session.session_id
+                    )
+                    if annotation.exists():
+                        paths.append(annotation)
                 if session.source_format.value == "workbuddy":
                     paths.extend(
                         p
@@ -511,6 +603,8 @@ def remove_source(session) -> None:
                     if value.get("target", {}).get("session_id") == session.session_id:
                         paths.append(sidecar)
             for path in paths:
+                if session.source_format.value == "antigravity":
+                    antigravity.ensure_closed(session.source_path)
                 temporary = path.with_name(".asb-cut-" + uuid.uuid4().hex)
                 path.rename(temporary)
                 renamed.append((path, temporary))

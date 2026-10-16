@@ -21,9 +21,9 @@ from session_migrate.conversion import (
 from session_migrate.errors import SessionMigrateError
 from session_migrate.model import AgentFormat, EventKind, Role, Session, TargetFormat
 
-from agent_session_bridge import __version__, dsh, pi_context, stores, workbuddy
+from agent_session_bridge import __version__, antigravity, dsh, pi_context, stores, workbuddy
 
-FORMATS = ("codex", "pi", "dsh", "opencode", "qwen", "claude", "workbuddy")
+FORMATS = ("codex", "pi", "dsh", "opencode", "qwen", "claude", "workbuddy", "antigravity")
 
 
 def disk_path(path: Path) -> Path:
@@ -57,7 +57,9 @@ def load(path: Path, source_format: str = "auto") -> Session:
             raise SessionMigrateError("native OpenCode DB requires --from opencode")
         return stores.load_opencode(path)
     if source_format == "auto":
-        if path.suffix == ".zstd":
+        if path.suffix == ".db":
+            source_format = "antigravity"
+        elif path.suffix == ".zstd":
             source_format = "dsh"
         elif path.suffix == ".json":
             # OpenCode is the supported JSON-bundle format; Kilo is not a bridge target.
@@ -73,6 +75,8 @@ def load(path: Path, source_format: str = "auto") -> Session:
                 source_format = "workbuddy"
             elif isinstance(first, dict) and first.get("type") == "session" and "version" in first:
                 source_format = "pi"
+    if source_format == "antigravity":
+        return antigravity.parse(path)
     if source_format == "dsh":
         return dsh.parse(path)
     if source_format == "workbuddy":
@@ -105,6 +109,7 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
             "claude": [home / "projects"],
             "qwen": [home / "projects"],
             "workbuddy": [home / "projects"],
+            "antigravity": [home / "conversations"],
         }[source_format]
     else:
         roots = [root.expanduser()]
@@ -112,7 +117,7 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
             raise SessionMigrateError("--source-root must be an existing directory")
     if not any(path.is_dir() for path in roots):
         raise SessionMigrateError(f"no {source_format} session root found; pass --source-root")
-    pattern = "*.json" if source_format == "opencode" else "*.jsonl"
+    pattern = {"opencode": "*.json", "antigravity": "*.db"}.get(source_format, "*.jsonl")
     paths = sorted(
         {
             path
@@ -121,6 +126,8 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
             if path.is_file() and not path.name.endswith(".manifest.json")
         }
     )
+    if source_format == "antigravity":
+        paths = [path for path in paths if path.name != "conversation_summaries.db"]
     if source_format == "dsh":
         paths += sorted({path for root in roots for path in root.rglob("session*.jsonl.zstd")})
         generations: dict[Path, list[tuple[int, Path]]] = {}
@@ -169,7 +176,7 @@ def prepare(
 ) -> tuple[bytes, Path, dict]:
     native_store = None
     home = target_home or agent_home(target) if not (output or output_dir) else None
-    if home is not None and target in {"codex", "workbuddy", "opencode"}:
+    if home is not None and target in {"codex", "workbuddy", "opencode", "antigravity"}:
         native_store = stores.descriptor(target, home, user_id=workbuddy_user_id)
     target_id = str(uuid.uuid4())
     working_dir = (cwd or session.cwd or Path.cwd()).expanduser().resolve()
@@ -193,6 +200,9 @@ def prepare(
         if getattr(session, field):
             filtered[f"filtered:session_{field}"] += 1
     conversation = replace(session, events=tuple(events), model=None, model_provider=None)
+    if target == "antigravity":
+        conversation, changes = antigravity.conversation(conversation)
+        filtered.update(changes)
     if target == "pi":
         provider, model = pi_context.target_model(
             target_home or agent_home(target), working_dir, provider=provider, model=model
@@ -242,9 +252,11 @@ def prepare(
             ),
         )
         target_id, payload, dropped = artifact.session_id, artifact.native_bytes, artifact.dropped
+        if target == "antigravity":
+            payload = antigravity.with_workspace(payload, working_dir)
         warnings = list(artifact.warnings)
         target_version = artifact.target_cli_version
-        suffix = ".json" if target == "opencode" else ".jsonl"
+        suffix = {"opencode": ".json", "antigravity": ".db"}.get(target, ".jsonl")
         native_path = (
             (home or Path.cwd() / "migrations") / "asb-imports" / f"{target_id}.json"
             if target == "opencode"
@@ -257,6 +269,8 @@ def prepare(
     )
     if target == "dsh" and not destination.name.endswith(".jsonl.zstd"):
         raise SessionMigrateError("DSH output filename must end in .jsonl.zstd")
+    if target == "antigravity" and destination.suffix != ".db":
+        raise SessionMigrateError("Antigravity output filename must end in .db")
     if destination.resolve() == session.source_path.resolve():
         raise SessionMigrateError("source and target must be different files")
     dropped = dict(sorted((Counter(dropped) + filtered).items()))
@@ -298,10 +312,14 @@ def _create(path: Path, data: bytes) -> None:
 
 
 def _source_can_move(session: Session) -> None:
-    stores.source_store(session)
+    store = stores.source_store(session)
     path = session.source_path
     if path.is_symlink():
         raise SessionMigrateError("--move does not delete symlink sources")
+    if session.source_format.value == "antigravity":
+        antigravity.ensure_closed(path)
+        if store:
+            antigravity.ensure_store_closed(Path(store["home"]))
     if session.source_format.value == "dsh":
         siblings = [
             item
@@ -323,15 +341,27 @@ def apply(
         raise SessionMigrateError("native destination does not match the prepared manifest")
     if move:
         _source_can_move(session)
+    if manifest["target"]["format"] == "antigravity":
+        # The DB has no title field. Persist it only on apply, keeping previews content-free.
+        manifest = {**manifest, "target": {**manifest["target"], "title": session.title}}
+        if store := manifest["target"].get("store"):
+            antigravity.ensure_store_closed(Path(store["home"]))
     sidecar = disk_path(destination.with_name(destination.name + ".manifest.json"))
     if os.path.lexists(destination) or os.path.lexists(sidecar):
         raise SessionMigrateError("refusing to overwrite an existing target or manifest")
     created: list[tuple[Path, int, int]] = []
     try:
-        for path, data in [
+        files = [
             (destination, payload),
             (sidecar, (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")),
-        ]:
+        ]
+        store = manifest["target"].get("store")
+        if store and store["kind"] == "antigravity":
+            files.append((
+                antigravity.annotation_path(Path(store["home"]), manifest["target"]["session_id"]),
+                antigravity.annotation_bytes(session.title),
+            ))
+        for path, data in files:
             _create(path, data)
             stat = path.stat()
             created.append((path, stat.st_dev, stat.st_ino))
@@ -379,4 +409,5 @@ def resume_command(target: str, path: Path, session_id: str, *, native: bool = F
         ),
         "dsh": ["dsh", "tui", "--resume", session_id],
         "workbuddy": [],
+        "antigravity": ["agy", "--conversation", session_id],
     }[target]

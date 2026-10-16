@@ -88,7 +88,7 @@ def migrated(session: Session, target: str, directory: Path) -> Path:
             ConversionOptions(TargetFormat(target), session_id=identifier, cwd=session.cwd),
         )
         payload = artifact.native_bytes
-        suffix = ".json" if target == "opencode" else ".jsonl"
+        suffix = {"opencode": ".json", "antigravity": ".db"}.get(target, ".jsonl")
     directory.mkdir(parents=True, exist_ok=True)
     output = directory / f"{target}-{identifier}{suffix}"
     output.write_bytes(payload)

@@ -1,6 +1,6 @@
 ---
 name: migrate-agent-session
-description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code and WorkBuddy with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
+description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code, WorkBuddy and Antigravity CLI (agy) with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
 ---
 
 # Migrate agent sessions
@@ -23,7 +23,7 @@ If not installed, this project needs Python 3.14+; create a project venv and run
 - Use `--cwd` only when the user intends to relocate the working directory.
 - Pi requires a destination model because it restores model selection from historical assistant messages. The CLI reads defaults from the target home `settings.json`, then target cwd `.pi/settings.json`; `--provider` / `--model` override them. With no complete target defaults, supply the intended target pair. Never substitute the source model. No settings files are changed.
 
-Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`.
+Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`, `antigravity`.
 Use `asb formats` / `asb convert --help` for available options.
 
 ## Execute
@@ -46,11 +46,14 @@ For custom target homes, launch the client with its corresponding home environme
 ## Format limits
 
 - Native OpenCode selection: `asb convert --from opencode --session <id> --to pi --move --apply`. Default selection reads its DB; `--source-root` can point to the directory containing `opencode.db`. A manually supplied JSON export is a standalone file; cutting that export does not delete its original DB session.
-- Codex / WorkBuddy / OpenCode native target homes must already contain client-initialized databases. Unknown schemas or required fields fail clearly. Use `--output-dir` for portable files without DB registration.
+- Codex / WorkBuddy / OpenCode / Antigravity native target homes must already contain client-initialized databases. Unknown schemas or required fields fail clearly. Use `--output-dir` for portable files without DB registration.
 - For a Git project, start OpenCode once in the intended working directory to initialize its project index before importing there.
 - WorkBuddy handles local sessions and its DB/cache. Multiple destination accounts require `--workbuddy-user-id`. Resume from WorkBuddy's session list. Blob images are omitted and counted.
 - DSH reads v4 JSONL/zstd. Older logs must be upgraded by DSH first. Multiple generations block a move.
 - DSH images are currently omitted and counted. Summaries become labeled user context.
+- Antigravity means the agy CLI SQLite format, not direct desktop `.pb` or encrypted storage. Its home is `~/.gemini/antigravity-cli`; use `--source-root` / `--target-home` to override. Close clients using that home before native writes or cuts. Active presence locks and WAL/SHM/journal files block cuts.
+- Antigravity uses a per-session DB, shared `conversation_summaries.db`, `jetbox_summaries_proto.pb`, `annotations/<id>.pbtxt` and last-conversation cache. The CLI writes and removes the selected records together. Keep portable `.db` and `.manifest.json` files together for title/cwd metadata. Summaries become labeled user context, images are omitted and counted.
+- For a desktop source, first import it in agy: `/resume`, Tab to **Antigravity**, select and confirm. Convert the resulting CLI copy. Moving that copy does not delete the desktop original. Direct desktop installation is not supported; do not claim it was performed.
 - Cut removes selected transcript/bridge manifest, native session DB rows and known history/list entries. Shared projects, attachments, backups, auth and runtime settings are retained. A failure during source cleanup can leave a valid target and retained source: inspect errors before retrying.
 - Portable `--output` / `--output-dir` files need native installation/import for ID-based resume. Pi can open any emitted Pi file via `pi --session <file>`.
 - Compaction boundaries remain effective: Pi continues from the latest summary and later messages; earlier messages remain in its session history. Summaries can describe past actions; raw tool execution records are excluded.
