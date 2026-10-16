@@ -122,7 +122,7 @@ def test_workbuddy_native_register_cut_cleans_db_and_recent_cache(tmp_path):
 
 def test_pi_runtime_roles_do_not_block_dialogue(tmp_path):
     path = migrated(seed(tmp_path / "seed"), "pi", tmp_path / "input")
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     rows[1:1] = [
         {
             "type": "message",
