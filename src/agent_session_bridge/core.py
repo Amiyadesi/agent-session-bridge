@@ -21,9 +21,20 @@ from session_migrate.conversion import (
 from session_migrate.errors import SessionMigrateError
 from session_migrate.model import AgentFormat, EventKind, Role, Session, TargetFormat
 
-from agent_session_bridge import __version__, antigravity, dsh, pi_context, stores, workbuddy
+from agent_session_bridge import (
+    __version__,
+    antigravity,
+    antigravity_desktop,
+    dsh,
+    pi_context,
+    stores,
+    workbuddy,
+)
 
-FORMATS = ("codex", "pi", "dsh", "opencode", "qwen", "claude", "workbuddy", "antigravity")
+FORMATS = (
+    "codex", "pi", "dsh", "opencode", "qwen", "claude", "workbuddy",
+    "antigravity", "antigravity-desktop",
+)
 
 
 def disk_path(path: Path) -> Path:
@@ -34,6 +45,8 @@ def disk_path(path: Path) -> Path:
 
 
 def agent_home(agent: str) -> Path:
+    if agent == "antigravity-desktop":
+        return antigravity_desktop.home()
     if agent == "opencode":
         return (
             Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share")))
@@ -50,7 +63,9 @@ def agent_home(agent: str) -> Path:
     return default_target_home(TargetFormat(agent))
 
 
-def load(path: Path, source_format: str = "auto") -> Session:
+def load(
+    path: Path, source_format: str = "auto", *, state_database: Path | None = None
+) -> Session:
     path = disk_path(path)
     if path.parent.name == "opencode.db" and path.parent.is_file():
         if source_format not in {"auto", "opencode"}:
@@ -58,7 +73,9 @@ def load(path: Path, source_format: str = "auto") -> Session:
         return stores.load_opencode(path)
     if source_format == "auto":
         if path.suffix == ".db":
-            source_format = "antigravity"
+            source_format = (
+                "antigravity-desktop" if antigravity_desktop.detect(path) else "antigravity"
+            )
         elif path.suffix == ".zstd":
             source_format = "dsh"
         elif path.suffix == ".json":
@@ -75,6 +92,10 @@ def load(path: Path, source_format: str = "auto") -> Session:
                 source_format = "workbuddy"
             elif isinstance(first, dict) and first.get("type") == "session" and "version" in first:
                 source_format = "pi"
+    if source_format == "antigravity-desktop":
+        return antigravity_desktop.parse(path, state_database=state_database)
+    if state_database is not None:
+        raise SessionMigrateError("--source-state-db requires an Antigravity desktop source")
     if source_format == "antigravity":
         return antigravity.parse(path)
     if source_format == "dsh":
@@ -110,6 +131,7 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
             "qwen": [home / "projects"],
             "workbuddy": [home / "projects"],
             "antigravity": [home / "conversations"],
+            "antigravity-desktop": [home / "conversations"],
         }[source_format]
     else:
         roots = [root.expanduser()]
@@ -117,7 +139,9 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
             raise SessionMigrateError("--source-root must be an existing directory")
     if not any(path.is_dir() for path in roots):
         raise SessionMigrateError(f"no {source_format} session root found; pass --source-root")
-    pattern = {"opencode": "*.json", "antigravity": "*.db"}.get(source_format, "*.jsonl")
+    pattern = {
+        "opencode": "*.json", "antigravity": "*.db", "antigravity-desktop": "*.db",
+    }.get(source_format, "*.jsonl")
     paths = sorted(
         {
             path
@@ -128,6 +152,12 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
     )
     if source_format == "antigravity":
         paths = [path for path in paths if path.name != "conversation_summaries.db"]
+    if source_format == "antigravity-desktop":
+        paths = [path for path in paths if path.name != "conversation_summaries.db"]
+        if not paths and any(path for root in roots for path in root.rglob("*.pb")):
+            raise SessionMigrateError(
+                "legacy desktop .pb requires SQLite migration in the official client first"
+            )
     if source_format == "dsh":
         paths += sorted({path for root in roots for path in root.rglob("session*.jsonl.zstd")})
         generations: dict[Path, list[tuple[int, Path]]] = {}
@@ -173,11 +203,18 @@ def prepare(
     provider: str | None = None,
     model: str | None = None,
     workbuddy_user_id: str | None = None,
+    target_state_db: Path | None = None,
 ) -> tuple[bytes, Path, dict]:
     native_store = None
     home = target_home or agent_home(target) if not (output or output_dir) else None
-    if home is not None and target in {"codex", "workbuddy", "opencode", "antigravity"}:
-        native_store = stores.descriptor(target, home, user_id=workbuddy_user_id)
+    if target_state_db is not None and target != "antigravity-desktop":
+        raise SessionMigrateError("--target-state-db requires an Antigravity desktop target")
+    if home is not None and target in {
+        "codex", "workbuddy", "opencode", "antigravity", "antigravity-desktop",
+    }:
+        native_store = stores.descriptor(
+            target, home, user_id=workbuddy_user_id, state_database=target_state_db
+        )
     target_id = str(uuid.uuid4())
     working_dir = (cwd or session.cwd or Path.cwd()).expanduser().resolve()
     if not working_dir.is_dir():
@@ -200,7 +237,7 @@ def prepare(
         if getattr(session, field):
             filtered[f"filtered:session_{field}"] += 1
     conversation = replace(session, events=tuple(events), model=None, model_provider=None)
-    if target == "antigravity":
+    if target in {"antigravity", "antigravity-desktop"}:
         conversation, changes = antigravity.conversation(conversation)
         filtered.update(changes)
     if target == "pi":
@@ -240,11 +277,15 @@ def prepare(
         warnings = []
         target_version = "format-v4"
     else:
+        if conversation.source_format.value == "antigravity-desktop":
+            # The shared codec uses the CLI enum; the manifest retains the desktop identity.
+            conversation = replace(conversation, source_format=AgentFormat.ANTIGRAVITY,
+                                   cli_version=None)
         # Windows rollout paths contain colons; serializers and path helpers handle these.
         artifact = convert_session(
             conversation,
             ConversionOptions(
-                TargetFormat(target),
+                TargetFormat("antigravity" if target == "antigravity-desktop" else target),
                 session_id=target_id,
                 cwd=working_dir,
                 model_provider=provider,
@@ -252,16 +293,22 @@ def prepare(
             ),
         )
         target_id, payload, dropped = artifact.session_id, artifact.native_bytes, artifact.dropped
-        if target == "antigravity":
+        if target in {"antigravity", "antigravity-desktop"}:
             payload = antigravity.with_workspace(payload, working_dir)
+        if target == "antigravity-desktop":
+            payload = antigravity_desktop.as_desktop(payload)
         warnings = list(artifact.warnings)
         target_version = artifact.target_cli_version
-        suffix = {"opencode": ".json", "antigravity": ".db"}.get(target, ".jsonl")
-        native_path = (
-            (home or Path.cwd() / "migrations") / "asb-imports" / f"{target_id}.json"
-            if target == "opencode"
-            else target_import_paths(artifact, target_home or agent_home(target))[0]
-        )
+        suffix = {
+            "opencode": ".json", "antigravity": ".db", "antigravity-desktop": ".db",
+        }.get(target, ".jsonl")
+        if target == "antigravity-desktop":
+            native_path = (home or Path.cwd() / "migrations") / "conversations" / f"{target_id}.db"
+            target_version = "IDE 2.5.5"
+        elif target == "opencode":
+            native_path = (home or Path.cwd() / "migrations") / "asb-imports" / f"{target_id}.json"
+        else:
+            native_path = target_import_paths(artifact, target_home or agent_home(target))[0]
     destination = disk_path(
         (output or (output_dir / f"{target}-{target_id}{suffix}" if output_dir else native_path))
         .expanduser()
@@ -269,7 +316,7 @@ def prepare(
     )
     if target == "dsh" and not destination.name.endswith(".jsonl.zstd"):
         raise SessionMigrateError("DSH output filename must end in .jsonl.zstd")
-    if target == "antigravity" and destination.suffix != ".db":
+    if target in {"antigravity", "antigravity-desktop"} and destination.suffix != ".db":
         raise SessionMigrateError("Antigravity output filename must end in .db")
     if destination.resolve() == session.source_path.resolve():
         raise SessionMigrateError("source and target must be different files")
@@ -316,6 +363,14 @@ def _source_can_move(session: Session) -> None:
     path = session.source_path
     if path.is_symlink():
         raise SessionMigrateError("--move does not delete symlink sources")
+    if session.source_format.value == "antigravity-desktop":
+        antigravity.ensure_closed(path)
+        if path.with_suffix(".pb").exists():
+            raise SessionMigrateError(
+                "desktop has a legacy .pb generation; copy or upgrade it first"
+            )
+        if store:
+            antigravity_desktop.ensure_closed(Path(store["home"]), Path(store["database"]))
     if session.source_format.value == "antigravity":
         antigravity.ensure_closed(path)
         if store:
@@ -341,11 +396,13 @@ def apply(
         raise SessionMigrateError("native destination does not match the prepared manifest")
     if move:
         _source_can_move(session)
-    if manifest["target"]["format"] == "antigravity":
+    if manifest["target"]["format"] in {"antigravity", "antigravity-desktop"}:
         # The DB has no title field. Persist it only on apply, keeping previews content-free.
         manifest = {**manifest, "target": {**manifest["target"], "title": session.title}}
         if store := manifest["target"].get("store"):
             antigravity.ensure_store_closed(Path(store["home"]))
+            if store["kind"] == "antigravity-desktop":
+                antigravity_desktop.ensure_closed(Path(store["home"]), Path(store["database"]))
     sidecar = disk_path(destination.with_name(destination.name + ".manifest.json"))
     if os.path.lexists(destination) or os.path.lexists(sidecar):
         raise SessionMigrateError("refusing to overwrite an existing target or manifest")
@@ -356,7 +413,7 @@ def apply(
             (sidecar, (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")),
         ]
         store = manifest["target"].get("store")
-        if store and store["kind"] == "antigravity":
+        if store and store["kind"] in {"antigravity", "antigravity-desktop"}:
             files.append((
                 antigravity.annotation_path(Path(store["home"]), manifest["target"]["session_id"]),
                 antigravity.annotation_bytes(session.title),
@@ -410,4 +467,5 @@ def resume_command(target: str, path: Path, session_id: str, *, native: bool = F
         "dsh": ["dsh", "tui", "--resume", session_id],
         "workbuddy": [],
         "antigravity": ["agy", "--conversation", session_id],
+        "antigravity-desktop": [],
     }[target]

@@ -23,6 +23,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("formats", help="supported formats")
     inspect = commands.add_parser("inspect", help="read one session's metadata, never its messages")
     inspect.add_argument("input", type=Path)
+    inspect.add_argument("--source-state-db", type=Path, help="Antigravity desktop state.vscdb")
     inspect.add_argument(
         "--from", dest="source_format", choices=("auto", *core.FORMATS), default="auto"
     )
@@ -33,6 +34,7 @@ def parser() -> argparse.ArgumentParser:
             "--from", dest="source_format", choices=("auto", *core.FORMATS), default="auto"
         )
         cmd.add_argument("--source-root", type=Path, help="override source session store")
+        cmd.add_argument("--source-state-db", type=Path, help="Antigravity desktop state.vscdb")
         cmd.add_argument(
             "--project", type=Path, help="match cwd equal to or beneath this directory"
         )
@@ -49,6 +51,7 @@ def parser() -> argparse.ArgumentParser:
             cmd.add_argument("--provider", help="target provider ID")
             cmd.add_argument("--model", help="target model ID")
             cmd.add_argument("--workbuddy-user-id", help="target WorkBuddy account ID")
+            cmd.add_argument("--target-state-db", type=Path, help="Antigravity desktop state.vscdb")
             cmd.add_argument(
                 "--move", action="store_true", help="delete source after verified write"
             )
@@ -85,12 +88,14 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
             "default": "preview; keep sources; conversation only (no tool traces)",
         }, 0
     if args.command == "inspect":
-        return core.summary(core.load(args.input, args.source_format)), 0
+        return core.summary(core.load(
+            args.input, args.source_format, state_database=args.source_state_db
+        )), 0
     paths = _paths(args)
     selected = {}
     if args.session:
         for path in paths:
-            session = core.load(path, args.source_format)
+            session = core.load(path, args.source_format, state_database=args.source_state_db)
             if session.session_id == args.session and core.project_matches(
                 session.cwd, args.project
             ):
@@ -105,7 +110,9 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
         try:
             if getattr(args, "move", False) and path.is_symlink():
                 raise SessionMigrateError("--move does not delete symlink sources")
-            session = selected.get(path) or core.load(path, args.source_format)
+            session = selected.get(path) or core.load(
+                path, args.source_format, state_database=args.source_state_db
+            )
             if args.session and session.session_id != args.session:
                 continue
             if not core.project_matches(session.cwd, args.project):
@@ -123,6 +130,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
                 provider=args.provider,
                 model=args.model,
                 workbuddy_user_id=args.workbuddy_user_id,
+                target_state_db=args.target_state_db,
             )
             if args.move:
                 core._source_can_move(session)

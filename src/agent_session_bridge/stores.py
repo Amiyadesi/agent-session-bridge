@@ -21,7 +21,7 @@ from pathlib import Path
 from session_migrate.errors import SessionMigrateError
 from session_migrate.formats import opencode
 
-from agent_session_bridge import antigravity
+from agent_session_bridge import antigravity, antigravity_desktop
 
 
 def quote(name: str) -> str:
@@ -109,7 +109,11 @@ def database(kind: str, home: Path) -> Path:
     return path
 
 
-def descriptor(kind: str, home: Path, *, user_id: str | None = None) -> dict:
+def descriptor(
+    kind: str, home: Path, *, user_id: str | None = None, state_database: Path | None = None
+) -> dict:
+    if kind == "antigravity-desktop":
+        return antigravity_desktop.descriptor(home, state_database)
     db = database(kind, home)
     if kind == "antigravity":
         with connection(db) as c:
@@ -144,6 +148,16 @@ def descriptor(kind: str, home: Path, *, user_id: str | None = None) -> dict:
 
 def source_store(session) -> dict | None:
     kind, path = session.source_format.value, session.source_path
+    if kind == "antigravity-desktop":
+        home = path.parent.parent
+        if path.parent.name == "conversations" and (
+            (home / "installation_id").exists() or home.parent.name == ".gemini"
+            or session.state_database is not None
+        ):
+            if path.name != f"{session.session_id}.db":
+                raise SessionMigrateError("desktop DB filename does not match selected session")
+            return descriptor(kind, home, state_database=session.state_database)
+        return None
     if kind == "opencode" and path.parent.name == "opencode.db" and path.parent.is_file():
         return descriptor(kind, path.parent.parent)
     if kind == "antigravity" and path.parent.name == "conversations":
@@ -196,6 +210,9 @@ def register(store: dict, manifest: dict, payload: bytes, source) -> None:
     sid, cwd = target["session_id"], target["cwd"]
     now, created = int(time.time() * 1000), _ms(source.started_at)
     title = source.title or "Imported conversation"
+    if kind == "antigravity-desktop":
+        antigravity_desktop.register(store, target, payload, title, now)
+        return
     if kind == "antigravity":
         _register_antigravity(store, target, payload, title, now)
         return
@@ -428,11 +445,14 @@ def load_opencode(path: Path):
 
 def _delete_rows(c, store: dict, sid: str, path: Path | None = None) -> None:
     kind = store["kind"]
-    if kind == "antigravity":
-        antigravity.validate_summary(c)
+    if kind in {"antigravity", "antigravity-desktop"}:
         expected = Path(store["home"]) / "conversations" / f"{sid}.db"
         if path is None or not same_path(expected, path):
             raise SessionMigrateError("Antigravity DB path does not match selected transcript")
+        if kind == "antigravity-desktop":
+            antigravity_desktop.update_index(c, sid)
+            return
+        antigravity.validate_summary(c)
         if c.execute(
             "DELETE FROM conversation_summaries WHERE conversation_id=?", (sid,)
         ).rowcount != 1:
@@ -492,13 +512,16 @@ def _caches(session, store: dict | None) -> list[tuple[Path, bytes, bytes]]:
             value = json.loads(original)
             value["sessions"] = [r for r in value["sessions"] if r["conversationId"] != sid]
             changes.append((p, original, (json.dumps(value, ensure_ascii=False) + "\n").encode()))
-    elif kind == "antigravity" and home:
-        cache = home / "jetbox_summaries_proto.pb"
-        if cache.exists():
-            original = cache.read_bytes()
-            updated = antigravity.summary_cache(original, sid)
-            if updated != original:
-                changes.append((cache, original, updated))
+    elif kind in {"antigravity", "antigravity-desktop"} and home:
+        if kind == "antigravity-desktop":
+            changes.extend(antigravity_desktop.cache_changes(home, sid))
+        else:
+            cache = home / "jetbox_summaries_proto.pb"
+            if cache.exists():
+                original = cache.read_bytes()
+                updated = antigravity.summary_cache(original, sid)
+                if updated != original:
+                    changes.append((cache, original, updated))
         p = home / "cache" / "last_conversations.json"
         if p.exists():
             original = p.read_bytes()
@@ -548,6 +571,8 @@ def _replace(path: Path, data: bytes) -> None:
 
 def remove_source(session) -> None:
     store = source_store(session)
+    if session.source_format.value == "antigravity-desktop" and store:
+        antigravity_desktop.ensure_closed(Path(store["home"]), Path(store["database"]))
     virtual = session.source_format.value == "opencode" and store is not None
     changes = _caches(session, store)
     renamed = []
@@ -556,7 +581,7 @@ def remove_source(session) -> None:
         with connection(Path(store["database"]), write=True) if store else _no_database() as c:
             if virtual:
                 data = opencode_bytes(session.source_path, c)
-            elif session.source_format.value == "antigravity":
+            elif session.source_format.value in {"antigravity", "antigravity-desktop"}:
                 data = antigravity.move_bytes(session.source_path)
             else:
                 data = session.source_path.read_bytes()
@@ -570,7 +595,7 @@ def remove_source(session) -> None:
                 )
             if not virtual:
                 paths = [session.source_path]
-                if session.source_format.value == "antigravity" and store:
+                if session.source_format.value in {"antigravity", "antigravity-desktop"} and store:
                     annotation = antigravity.annotation_path(
                         Path(store["home"]), session.session_id
                     )
@@ -603,8 +628,10 @@ def remove_source(session) -> None:
                     if value.get("target", {}).get("session_id") == session.session_id:
                         paths.append(sidecar)
             for path in paths:
-                if session.source_format.value == "antigravity":
+                if session.source_format.value in {"antigravity", "antigravity-desktop"}:
                     antigravity.ensure_closed(session.source_path)
+                    if session.source_format.value == "antigravity-desktop" and store:
+                        antigravity_desktop.ensure_closed(Path(store["home"]), None)
                 temporary = path.with_name(".asb-cut-" + uuid.uuid4().hex)
                 path.rename(temporary)
                 renamed.append((path, temporary))

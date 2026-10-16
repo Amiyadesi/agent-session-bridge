@@ -2,7 +2,7 @@
 
 终端会话迁移工具 + AI skill。单个会话、会话 ID、项目目录批量转换；复制或剪切。
 
-支持 **Codex、Pi、DeepSeek Harness (DSH)、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI (agy)** 互转。
+支持 **Codex、Pi、DeepSeek Harness (DSH)、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI (agy) 和桌面 IDE** 互转。
 本项目使用 MIT 协议开源；Claude Code、WorkBuddy、Antigravity 是兼容目标，不代表这些客户端开源。
 
 复用 MIT 项目 `session-migrate==0.11.0` 的格式适配器，补充 DSH v4 和 Windows 写入。
@@ -119,16 +119,49 @@ asb convert --from antigravity --session SOURCE_UUID --to codex --move --apply
 保存，以保留标题和工作目录；便携文件不登记原生索引，需再次转换到原生 home 后按 ID 恢复。
 压缩摘要转为标明来源的用户上下文，转换数量计入 manifest；图片暂不迁移。
 
-**桌面版范围：** 此适配器处理 agy CLI SQLite，尚不直接读写桌面版旧 `.pb` 或加密文件。
-桌面会话可先在 agy 的 `/resume` 中按 Tab 切到 **Antigravity** 标签，导入后再转换 CLI 副本。
-对该副本执行 `--move` 只删除 CLI 副本，桌面原会话仍需在桌面客户端处理。
-本工具尚未接入桌面版原生写入。
+### Antigravity 桌面 IDE
+
+桌面版使用独立格式名 `antigravity-desktop`，支持 IDE **2.5.5 的 SQLite `.db` 会话**。
+默认数据目录 `~/.gemini/antigravity-ide`；旧目录 `~/.gemini/antigravity` 中已有 SQLite 会话时也可读取。
+桌面数据目录与 agy CLI 分开，原生迁移前先初始化并关闭桌面客户端。
+
+```powershell
+# 按项目复制 Codex 会话到桌面版
+asb convert --from codex --to antigravity-desktop --project "D:\work\my-project" --apply
+
+# 选一条桌面会话剪切到 Pi
+asb convert --from antigravity-desktop --session SOURCE_UUID --to pi --move --apply
+
+# 桌面版与 agy CLI 双向转换
+asb convert --from antigravity --session SOURCE_UUID --to antigravity-desktop --apply
+asb convert --from antigravity-desktop --session SOURCE_UUID --to antigravity --apply
+```
+
+桌面迁移同时更新 `state.vscdb` 的两个已知历史索引和已有 protobuf 摘要缓存，保留原标题与项目目录。
+剪切精确清理所选 `.db`、注释、manifest 及对应索引项，保留其他会话和共享库；
+活动语言服务、WAL/SHM/journal 或同 ID 的旧 `.pb` 会阻止剪切。
+从桌面客户端的历史入口打开迁移会话；结果的 `resume` 数组为空，不提供桌面命令行恢复指令。
+官方语言服务已按 ID 回读真实迁移对话；GUI 历史列表和模型续聊尚未验证。
+
+标准路径自动定位全局状态库：Windows `%APPDATA%/Antigravity IDE/User/globalStorage/state.vscdb`，
+macOS `~/Library/Application Support/Antigravity IDE/...`，Linux `$XDG_CONFIG_HOME/Antigravity IDE/...`
+（未设置时用 `~/.config`）。旧目录使用应用名 `Antigravity`。
+自定义数据目录需要显式指定状态库；源端用 `--source-state-db`，目标端用 `--target-state-db`：
+
+```powershell
+asb convert --from antigravity-desktop --source-root "D:\agy-data" --source-state-db "D:\agy-config\state.vscdb" --session SOURCE_UUID --to pi --move --apply
+asb convert source.jsonl --to antigravity-desktop --target-home "D:\agy-data" --target-state-db "D:\agy-config\state.vscdb" --apply
+```
+
+旧 `.pb` 或加密历史需先在官方桌面客户端升级/导入为 SQLite，当前不直接转换。
+也可通过 agy 的 `/resume` → **Antigravity** 标签克隆成 CLI 会话后再迁移；
+剪切 CLI 副本只删除该副本。便携桌面 `.db` 同样需保留 `.manifest.json`。
 
 ### WorkBuddy 与 Codex 数据库
 
 原生目标目录需要先由对应客户端初始化，CLI 不创建或猜测客户端的数据库结构。
-支持已验证的 Codex `state_*.sqlite`、WorkBuddy `workbuddy.db`、OpenCode `opencode.db`
-和 Antigravity CLI `conversation_summaries.db`；
+支持已验证的 Codex `state_*.sqlite`、WorkBuddy `workbuddy.db`、OpenCode `opencode.db`、
+Antigravity CLI `conversation_summaries.db` 和桌面 `state.vscdb`；
 遇到不兼容结构会明确失败，并保留源会话。
 
 ```powershell
@@ -188,6 +221,10 @@ Codex / Pi / OpenCode / Claude 官方 SDK / WorkBuddy 原生读取通过；DSH v
 其中 **16 条原生剪切**检查了 DB、标题注释、摘要缓存和邻居会话保留。
 Windows Antigravity CLI 1.4.0 原生恢复和续聊落盘通过；使用本机 HTTP 模拟响应，
 未向外部模型发送私人对话，恢复后原标题和工作目录保持一致。
+
+桌面版另通过 **34 条真实上下文路线、18 条原生剪切**；官方 IDE 2.5.5 语言服务
+逐条回读三份真实副本（395、31、382 条），核对正文、角色、标题和目录。
+原始会话均未修改。GUI 历史发现和模型续聊未测，详见 [兼容性](docs/compatibility.md)。
 
 ## AI Skill
 

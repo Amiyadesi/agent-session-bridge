@@ -20,7 +20,7 @@ from session_migrate.model import (
     TargetFormat,
 )
 
-from agent_session_bridge import core, dsh, workbuddy
+from agent_session_bridge import antigravity, antigravity_desktop, core, dsh, workbuddy
 from agent_session_bridge.cli import main
 
 STAMP = "2026-10-15T00:00:00Z"
@@ -85,10 +85,19 @@ def migrated(session: Session, target: str, directory: Path) -> Path:
     else:
         artifact = convert_session(
             session,
-            ConversionOptions(TargetFormat(target), session_id=identifier, cwd=session.cwd),
+            ConversionOptions(
+                TargetFormat("antigravity" if target == "antigravity-desktop" else target),
+                session_id=identifier, cwd=session.cwd,
+            ),
         )
         payload = artifact.native_bytes
-        suffix = {"opencode": ".json", "antigravity": ".db"}.get(target, ".jsonl")
+        if target == "antigravity-desktop":
+            payload = antigravity_desktop.as_desktop(
+                antigravity.with_workspace(payload, session.cwd)
+            )
+        suffix = {
+            "opencode": ".json", "antigravity": ".db", "antigravity-desktop": ".db",
+        }.get(target, ".jsonl")
     directory.mkdir(parents=True, exist_ok=True)
     output = directory / f"{target}-{identifier}{suffix}"
     output.write_bytes(payload)

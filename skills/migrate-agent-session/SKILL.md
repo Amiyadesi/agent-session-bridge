@@ -1,6 +1,6 @@
 ---
 name: migrate-agent-session
-description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code, WorkBuddy and Antigravity CLI (agy) with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
+description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code, WorkBuddy, Antigravity CLI (agy) and desktop IDE with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
 ---
 
 # Migrate agent sessions
@@ -23,7 +23,7 @@ If not installed, this project needs Python 3.14+; create a project venv and run
 - Use `--cwd` only when the user intends to relocate the working directory.
 - Pi requires a destination model because it restores model selection from historical assistant messages. The CLI reads defaults from the target home `settings.json`, then target cwd `.pi/settings.json`; `--provider` / `--model` override them. With no complete target defaults, supply the intended target pair. Never substitute the source model. No settings files are changed.
 
-Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`, `antigravity`.
+Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`, `antigravity`, `antigravity-desktop`.
 Use `asb formats` / `asb convert --help` for available options.
 
 ## Execute
@@ -53,7 +53,10 @@ For custom target homes, launch the client with its corresponding home environme
 - DSH images are currently omitted and counted. Summaries become labeled user context.
 - Antigravity means the agy CLI SQLite format, not direct desktop `.pb` or encrypted storage. Its home is `~/.gemini/antigravity-cli`; use `--source-root` / `--target-home` to override. Close clients using that home before native writes or cuts. Active presence locks and WAL/SHM/journal files block cuts.
 - Antigravity uses a per-session DB, shared `conversation_summaries.db`, `jetbox_summaries_proto.pb`, `annotations/<id>.pbtxt` and last-conversation cache. The CLI writes and removes the selected records together. Keep portable `.db` and `.manifest.json` files together for title/cwd metadata. Summaries become labeled user context, images are omitted and counted.
-- For a desktop source, first import it in agy: `/resume`, Tab to **Antigravity**, select and confirm. Convert the resulting CLI copy. Moving that copy does not delete the desktop original. Direct desktop installation is not supported; do not claim it was performed.
+- `antigravity-desktop` supports IDE 2.5.5 SQLite `.db` sessions, with source/target home `~/.gemini/antigravity-ide` (older SQLite home `~/.gemini/antigravity`). Example: `asb convert --from codex --to antigravity-desktop --project <directory> --apply`. Select a desktop ID or project as for other formats. Desktop and agy CLI convert in either direction using their distinct format names.
+- Desktop native writes/cuts update both known `state.vscdb` history indexes, existing protobuf caches, title annotations and the selected conversation DB. Standard profile paths are inferred; for custom homes pass `--source-state-db` or `--target-state-db` with the corresponding globalStorage/state.vscdb. Close the desktop client first; a running language service or SQLite sidecars block modification. A same-ID legacy `.pb` blocks cuts. The shared state DB and neighboring sessions remain.
+- Desktop has no returned resume command: open via its native history UI. Official language-service readback is verified by ID; GUI history discovery and model continuation are unverified. Do not claim a GUI check from file parsing or DB registration alone.
+- Legacy desktop `.pb` or encrypted history must first be upgraded/imported into SQLite by the official client. Alternatively clone it through agy `/resume` → **Antigravity** and convert that CLI copy; moving the copy does not delete the desktop original.
 - Cut removes selected transcript/bridge manifest, native session DB rows and known history/list entries. Shared projects, attachments, backups, auth and runtime settings are retained. A failure during source cleanup can leave a valid target and retained source: inspect errors before retrying.
 - Portable `--output` / `--output-dir` files need native installation/import for ID-based resume. Pi can open any emitted Pi file via `pi --session <file>`.
 - Compaction boundaries remain effective: Pi continues from the latest summary and later messages; earlier messages remain in its session history. Summaries can describe past actions; raw tool execution records are excluded.

@@ -2,13 +2,13 @@
 
 **换 Agent，不用重开一段对话。**
 
-做了个开源小工具 Agent Session Bridge，支持 Codex、Pi、DeepSeek Harness、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI（agy）之间迁移对话。
+做了个开源小工具 Agent Session Bridge，支持 Codex、Pi、DeepSeek Harness、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI（agy）和桌面 IDE 之间迁移对话。
 
 可以转单条会话，也能按项目目录批量处理。默认复制，想剪切就加 `--move`：目标校验后，把原会话文件、对应数据库记录和已知索引一起清理。
 
 只带走对话上下文，工具调用、工具结果和思考记录自动过滤。命令行能用，也附了 skill，直接让 AI 帮你搬。全程本地处理，不调用模型，不上传会话。
 
-已用真实 Codex / Pi 会话验证；新增 Antigravity 也做了原生恢复、原标题保留和剪切清理测试。桌面旧会话需先通过官方 agy 导入。不同客户端的版本和格式限制都写在文档里。
+已用真实 Codex / Pi 会话验证；Antigravity CLI 做了原生恢复测试，桌面 SQLite 会话做了官方语言服务回读、原标题保留和剪切清理测试。桌面 GUI 列表和模型续聊未测，旧 `.pb` 需先由官方客户端升级。不同客户端的版本和格式限制都写在文档里。
 
 MIT 开源，欢迎来试用、提 issue，或者一起补适配：
 https://github.com/Amiyadesi/agent-session-bridge

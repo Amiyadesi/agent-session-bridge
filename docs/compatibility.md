@@ -14,6 +14,7 @@
 | Claude Code 2.1.301 | projects 下的 JSONL transcript | 官方 Claude Agent SDK 0.3.301 的 `listSessions`、`getSessionMessages` 读取真实导入对话；未执行交互续聊 |
 | WorkBuddy 5.7.6.40488862 | `projects/<slug>/<id>.jsonl` + `workbuddy.db` + 最近会话缓存 | 官方发布包原生数据库 repository 的 list/get、历史 `resolveReplayHistory` 读取真实导入；未登录 GUI 或调用模型 |
 | Antigravity CLI 1.4.0 Windows x64 | `conversations/<uuid>.db` + SQLite 摘要索引、protobuf 列表缓存、标题注释 | 官方发布包恢复真实 Pi 对话；本机 Gemini HTTP 模拟服务收到历史并返回固定响应，原生续聊落盘、原标题、工作目录回读通过；没有外部模型推理 |
+| Antigravity IDE 2.5.5 Windows x64 | 桌面 SQLite `conversations/<uuid>.db` + `state.vscdb` 两个历史索引、已有 protobuf 缓存、标题注释 | 官方发布包语言服务 `GetCascadeTrajectory` 按 ID 回读真实迁移对话，逐条核对角色/正文、原标题和目录；回读后 `GetAllCascadeTrajectories` 可列出该 ID，未验证 GUI 历史列表或模型续聊 |
 
 以上检查区分 **格式解析、原生读取、模型续聊**。Antigravity 的续聊检查使用本机模拟服务，其他原生检查未发送对话轮次；均未向外部模型发送私人对话。不承诺所有未来客户端版本兼容。
 Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本仓库自身完整使用 MIT 协议开源，不分发这些客户端。
@@ -29,6 +30,8 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 - 单元测试使用不含私人信息的合成 fixtures；真实原生验证在忽略目录执行，私人对话不进入仓库。
 - Antigravity 新增 **30 条真实上下文路线**：真实 Codex、Pi 来源各覆盖七种格式到 Antigravity、Antigravity 到八种格式。后者共 **16 条原生剪切**，检查所选 DB、标题注释、manifest、protobuf 缓存项删除及其他会话 ID 不变；两个真实源文件 SHA-256 均不变。
 - 另用真实 Pi 迁移副本在 Windows CLI 1.4.0 续聊：本机服务收到历史，客户端持久化固定响应。恢复前后的标题、工作目录一致，源 hash 不变。该检查验证原生历史请求与写回，不验证真实供应商认证、模型推理或桌面 GUI。
+- 桌面格式另覆盖 **34 条真实上下文路线**：两份 Codex/Pi 来源各验证桌面到九种格式、其余八种格式到桌面；其中 **18 条原生剪切**检查两个 SQLite 索引、两个已知 protobuf 缓存、注释及 manifest，邻居会话和无关设置保留，原始来源 SHA-256 不变。
+- 官方 IDE 2.5.5 语言服务按 ID 回读三份真实副本，分别 **395、31、382 条**；逐条角色/文字完全一致，目录和有效标题一致（无原标题时使用默认导入名称），三个保留源文件的 SHA-256 均未变。未发送新一轮消息。
 
 ## 数据库与删除规则
 
@@ -41,7 +44,9 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 - 原生 OpenCode 来源通过 DB 快照映射为虚拟路径 `.../opencode.db/<session-id>`；剪切删除的是 DB 会话。显式输入官方 export JSON 时只操作该文件。
 - 数据库事务配合源文件临时重命名、缓存原子替换。普通异常会回滚；源后续清理失败时保留已完成的目标并报告错误。多个文件和 DB 之间不具备跨进程、断电级原子性；停止源客户端后再剪切。
 - Claude 已知 sessions-index/history、桥接自己的 manifest 随选中会话清理。未识别的第三方缓存、备份和共享附件不递归删除。
-- Antigravity 仅处理 CLI SQLite：每会话 DB 剪切后移除，按 ID 删除 `conversation_summaries` 行、`jetbox_summaries_proto.pb` 对应 map 项、`cache/last_conversations.json` 对应值和 `annotations/<id>.pbtxt`。共享索引库、其他 ID、brain 工件/日志及备份保留。缓存替换与 SQLite 事务协作回滚；活动客户端 presence 锁或会话 WAL/SHM/journal 阻止原生修改/剪切，读取和复制仍支持一致的 WAL 快照。
+- Antigravity CLI：每会话 DB 剪切后移除，按 ID 删除 `conversation_summaries` 行、`jetbox_summaries_proto.pb` 对应 map 项、`cache/last_conversations.json` 对应值和 `annotations/<id>.pbtxt`。共享索引库、其他 ID、brain 工件/日志及备份保留。缓存替换与 SQLite 事务协作回滚；活动客户端 presence 锁或会话 WAL/SHM/journal 阻止原生修改/剪切，读取和复制仍支持一致的 WAL 快照。
+- Antigravity 桌面：默认数据目录 `~/.gemini/antigravity-ide`，旧 SQLite 数据可在 `~/.gemini/antigravity`。共享状态库位于平台配置目录的 `Antigravity IDE/User/globalStorage/state.vscdb`（旧目录的应用名为 `Antigravity`）。自定义位置通过 `--source-state-db` / `--target-state-db` 指定；不创建一份假状态库代替客户端初始化。
+- 桌面更新 `ItemTable` 的 `antigravityUnifiedStateSync.trajectorySummaries`（base64 protobuf map）与 `chat.ChatSessionStore.index`（version 1 JSON）。剪切按完整 ID 清理这两处索引，以及存在的 `jetbox_summaries_proto.pb` / `agyhub_summaries_proto.pb`、注释、会话 DB 和 manifest。共享状态库、配置、其他 ID、brain/附件/备份保留。活动 daemon PID、状态库或会话 sidecar 阻止修改；同 ID 的 `.pb` 与 `.db` 并存时拒绝剪切。
 
 ## Antigravity 的格式边界
 
@@ -52,7 +57,10 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 - 固定依赖的 SQLite context manager 不关闭连接，导致 Windows 临时 DB 无法删除。本地仅给该 codec 的 SQLite binding 使用退出时关闭的 Connection；其余格式和 schema/protobuf 校验保持原行为。
 - 独立 `.db` 本身不保存 UI 标题。桥接只在 apply 后的 manifest 保存标题和 cwd；预览保持无正文、无标题。移动便携输出时需同时保留该 manifest。
 - 没有原生压缩边界的目标将摘要改为标注的用户上下文，计入 `compaction:converted_to_user_context`；图片、工具、思考和运行状态不写入。
-- 桌面版与 CLI 存储分离。官方 CLI `/resume` 的 **Antigravity** 标签可以把桌面会话克隆到 CLI；本工具随后转换该 CLI 副本。**不直接读写桌面旧 `.pb`、加密会话或桌面索引；剪切 CLI 副本不会删除桌面原会话。**
+- `antigravity-desktop` 单独处理 IDE 2.5.5 SQLite。官方 Windows 发布包初始化的 schema 与固定 codec 一致；桌面 `trajectory_type=4, source=1`，CLI 为 source 17。只在内存快照适配枚举和正文结构以复用现有校验/投影；来源 SHA 仍对应原始快照。写入移除 CLI 专属 project ID，并保留工作目录和标题注释。
+- 桌面分段用户文本按 `CortexStepUserInput.items` → `TextOrScopeItem.text` 结构读取；不猜测任意可读字符串，不复制其中的文件/运行上下文。编辑后的助手回复使用 `modified_response`。其余已知工具/思考记录仍在统一边界过滤，不支持的编码明确失败。
+- 官方语言服务使用隔离配置、禁止外部推理的端点进行检查。冷启动的 `GetAllCascadeTrajectories` 在本次 standalone 环境返回空列表；指定 ID 读取后可列出会话及正确标题。**该证据不能证明 GUI 冷启动历史发现或模型续聊已通过。** 桌面 `resume` 返回空数组，不伪造 agy 恢复命令。
+- 旧 `.pb` 与加密历史不直接转换，需先由官方桌面客户端升级/导入为 SQLite；或使用官方 CLI `/resume` 的 **Antigravity** 标签克隆到 CLI 后再迁移。剪切 CLI 副本不会删除桌面原会话。
 
 ## 格式与损失
 
@@ -86,10 +94,14 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 | [Antigravity CLI 官方会话说明](https://antigravity.google/docs/cli/conversations) / [resume](https://antigravity.google/docs/cli/commands/resume) | 工作区作用域、CLI 会话目录与桌面会话克隆入口 |
 | [Antigravity CLI 1.4.0 官方发布](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.4.0) | Windows 包运行时核对 SQLite version、摘要字段与 annotations 路径；发布包内 protobuf 描述及原生写回交叉验证 wire 字段 |
 | [固定 Antigravity codec 源码](https://github.com/xhluca/session-migrate/blob/a3b0fae4a38bbe0c0c89876f2f2ee6ee0ad154c4/src/session_migrate/formats/antigravity.py) / [原生测试](https://github.com/xhluca/session-migrate/blob/a3b0fae4a38bbe0c0c89876f2f2ee6ee0ad154c4/tests/test_antigravity_native.py) | SQLite/protobuf 基础 schema、损失计数和离线 Gemini 原生验证方法 |
+| [Antigravity IDE 官方下载](https://antigravity.google/download) | Google LLC 签名有效的 Windows 2.5.5 发布包；只读核对 schema、内嵌 protobuf descriptors、桌面目录和 ChatSessionStore；原生语言服务隔离回读 |
+| [Antigravity Database Manager](https://github.com/ag-donald/Antigravity-Database-Manager/tree/7ce65e1e3ed3bca7eeaf653e5ffd0b8f3482e199) | `src/core/db_operations.py`、`protobuf.py`、`docs/schema.proto` 提供两个 ItemTable 历史索引和按 ID 增删的来源证据；未知结构仍拒绝写入 |
+| [Antigravity Storage Manager](https://github.com/unchase/antigravity-storage-manager/blob/450445043226f19761ca777d9fa84ba1874d2fbd/src/ideState.ts) | 交叉核对桌面 state.vscdb 路径；仅重建 brain/task 索引不足以证明真实 DB 会话注册 |
 | [Scoop WorkBuddy 分发说明](https://github.com/ScoopInstaller/Extras/blob/master/bucket/workbuddy.json) | 官方安装包地址、解包结构和 SHA-256 交叉核对 |
 
 WorkBuddy 官方安装包 SHA-256：`b4ed6c44dcfb480318cdf1fbb4874545a56403dac87c8f9b9d6ac451e88d8f15`。
 Antigravity CLI 1.4.0 Windows x64 ZIP SHA-256：`bcb0af25a19da704f9b70f1fd84a983e49e81b70534d32c4bf14328e4f2ead9b`，与官方 release asset digest 核对。
+Antigravity IDE 2.5.5 Windows 安装包 SHA-256：`a8c25631fd5e43bf217a6cf510ca796441817f4ad9c50b1d892282c7366edc4a`；Authenticode 签名为 Google LLC，状态 Valid。
 未执行网上的第三方迁移 skill，也未将客户端二进制或闭源代码放入本仓库。
 
 研究过的替代方案：[UniSessions](https://github.com/kyle0r/ai-agent-session-export) 提供会话导出与 SDK；

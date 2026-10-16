@@ -121,10 +121,10 @@ def raw_summary(data: bytes, values: dict) -> bytes:
         metadata = c.execute(
             "SELECT data FROM trajectory_metadata_blob WHERE id='main'"
         ).fetchone()[0]
-        trajectory_id = c.execute(
-            "SELECT trajectory_id FROM trajectory_meta WHERE cascade_id=?",
+        trajectory_id, source = c.execute(
+            "SELECT trajectory_id,source FROM trajectory_meta WHERE cascade_id=?",
             (values["conversation_id"],),
-        ).fetchone()[0]
+        ).fetchone()
     timestamp = native._field_varint(
         1, int(native._parse_timestamp(values["last_modified_time"]).timestamp())
     )
@@ -138,7 +138,7 @@ def raw_summary(data: bytes, values: dict) -> bytes:
         + native._field_bytes(15, native._field_text(1, values["title"]))
         + native._field_varint(16, values["last_user_input_step_index"])
         + native._field_bytes(17, metadata)
-        + native._field_varint(20, 17)
+        + native._field_varint(20, source)
         + native._field_varint(22, 4)
     )
 
