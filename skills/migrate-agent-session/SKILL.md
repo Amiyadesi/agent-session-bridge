@@ -8,6 +8,7 @@ description: Copy or cut conversation context between Codex, Pi, DeepSeek Harnes
 Use `asb` / `agent-session-bridge`; JSON stdout is the machine interface.
 The CLI uses local files, makes no model calls and never uploads transcripts.
 Copy and move include conversation context only: user/assistant messages, compaction summaries and supported user images. Tool calls/results, thinking and system/runtime records are filtered automatically. Counts appear as `filtered:*` in the manifest; no extra flag is needed.
+Preserve the source title where the target supports it. Native Codex titles come from the matching DB row (`name`, then `title`); standalone exports need a title in the log. Source model/provider and thinking settings are excluded.
 Use an installed command or the checkout's `.venv/Scripts/asb.exe` (Windows) / `.venv/bin/asb` (POSIX).
 If not installed, this project needs Python 3.14+; create a project venv and run `python -m pip install -e .` there.
 
@@ -20,6 +21,7 @@ If not installed, this project needs Python 3.14+; create a project venv and run
 - A project filter matches the recorded cwd and descendants by path boundary. It does not search message text.
 - `--source-root` overrides a source store; `--target-home` is the target agent home (not its `sessions` directory).
 - Use `--cwd` only when the user intends to relocate the working directory.
+- Pi requires a destination model because it restores model selection from historical assistant messages. The CLI reads defaults from the target home `settings.json`, then target cwd `.pi/settings.json`; `--provider` / `--model` override them. With no complete target defaults, supply the intended target pair. Never substitute the source model. No settings files are changed.
 
 Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`.
 Use `asb formats` / `asb convert --help` for available options.

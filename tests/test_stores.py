@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from session_migrate.errors import SessionMigrateError
@@ -33,6 +34,36 @@ def native_codex(tmp_path):
     payload, path, manifest = core.prepare(source, target="codex", target_home=home)
     core.apply(source, payload, path, manifest)
     return home, db, core.load(path, "codex")
+
+
+@pytest.mark.parametrize("name", [None, "原来的小标题"])
+def test_codex_title_from_matching_native_database(tmp_path, name):
+    home = tmp_path / "home"
+    db = codex_db(home)
+    source = replace(seed(tmp_path / "seed"), title=None)
+    payload, path, manifest = core.prepare(source, target="codex", target_home=home)
+    core.apply(source, payload, path, manifest)
+    with sqlite3.connect(db) as c:
+        c.execute("ALTER TABLE threads ADD COLUMN name TEXT")
+        c.execute(
+            "UPDATE threads SET title=?, name=? WHERE id=?",
+            ("原来的自动标题", name, manifest["target"]["session_id"]),
+        )
+    loaded = core.load(path, "codex")
+    assert loaded.title == (name or "原来的自动标题")
+    payload, out, manifest = core.prepare(loaded, target="pi", output_dir=tmp_path / "out")
+    core.apply(loaded, payload, out, manifest)
+    assert core.load(out).title == loaded.title
+
+
+def test_codex_title_does_not_use_database_row_for_another_path(tmp_path):
+    home, db, source = native_codex(tmp_path)
+    with sqlite3.connect(db) as c:
+        c.execute(
+            "UPDATE threads SET title=?, rollout_path=? WHERE id=?",
+            ("Wrong conversation", str(tmp_path / "different.jsonl"), source.session_id),
+        )
+    assert core.load(source.source_path).title is None
 
 
 def test_native_codex_register_cut_removes_rows_and_cache_keeps_neighbor(tmp_path):

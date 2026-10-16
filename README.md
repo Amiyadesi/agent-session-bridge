@@ -8,6 +8,7 @@
 复用 MIT 项目 `session-migrate==0.11.0` 的格式适配器，补充 DSH v4 和 Windows 写入。
 所有处理在本机进行，不调用模型，不上传会话。
 只迁移用户/助手对话、压缩摘要，以及目标支持的用户图片；过滤工具调用、工具结果、思考过程和系统运行上下文。
+保留原会话标题；不沿用源会话的模型、provider 或推理级别。
 
 ## 安装
 
@@ -64,8 +65,8 @@ asb convert "D:\exports\codex" --from codex --to dsh --apply
 # 只生成便携文件，不写入 agent 的默认会话目录
 asb convert "D:\exports\codex" --from codex --to pi --output-dir "D:\converted" --apply
 
-# --target-home 指 agent 的 home，不是 sessions 子目录
-asb convert --from codex --to pi --project "D:\work\my-project" --target-home "D:\portable-pi" --apply
+# --target-home 指 agent 的 home；未配置 Pi 默认模型时显式指定目标标识
+asb convert --from codex --to pi --project "D:\work\my-project" --target-home "D:\portable-pi" --provider TARGET_PROVIDER --model TARGET_MODEL --apply
 
 # 项目已换位置时，指定目标会话的工作目录
 asb convert old-session.jsonl --to pi --cwd "D:\new-project" --apply
@@ -130,6 +131,7 @@ asb convert source.jsonl --to dsh --apply
 
 - 默认预览；`--apply` 才写入。默认复制；`--move --apply` 才剪切。
 - 每次生成新 ID，拒绝覆盖已有目标或 manifest。
+- Codex 原生来源按 ID 和 rollout 路径核对 DB，优先读取 `name`，其次 `title`；独立导出文件只能保留日志自带的标题。标题写入目标支持的命名记录或原生 DB；Codex 便携文件的标题损失仍会计入 manifest。
 - 每个目标旁保存 `.manifest.json`，包含来源、目标、摘要、丢弃项计数；不包含对话正文。
 - 剪切前：写入文件和 manifest、校验 SHA-256、解析器回读、确认 ID、注册原生索引、再次确认源文件或数据库会话快照没变化。
 - 写入或回读失败：清理本次创建的目标文件，保留源文件。批量操作逐项处理；失败返回非零退出码，已成功项目保留。
@@ -139,7 +141,9 @@ asb convert source.jsonl --to dsh --apply
 - 不迁移 auth、API key、hooks、MCP、权限配置、签名思考链或运行中的工具状态。
 - 复制和剪切都只迁移对话上下文。工具调用、工具结果、思考过程、系统消息和运行元数据过滤掉，数量计入 manifest 的 `filtered:*`。
 - 压缩摘要保留原生上下文边界；Pi 续聊使用最新摘要及其后的消息，旧对话仍在会话历史中。不可表示的数据计入 manifest。DSH 暂不迁移图片；摘要转换为明确标注的用户上下文。
-- `--provider` / `--model` 可指定目标标识；不会创建 provider 配置。目标客户端仍需原有登录或本地配置。
+- 源模型与 provider 在序列化前清空，源推理设置随运行记录过滤；manifest 记录 `filtered:session_model` / `filtered:session_model_provider`。
+- Pi 会从历史助手消息恢复模型，无法只删除 `model_change`。迁移改用目标 home 的 `settings.json` 默认模型，目标 cwd 的 `.pi/settings.json` 优先；`--provider` / `--model` 可覆盖。没有完整目标默认值时，必须显式指定目标 provider 和 model，避免导入后恢复源模型或 `unknown`。
+- 其他格式中的必需历史模型字段使用格式占位值或显式目标标识；不会继承源标识。这些字段不创建 provider 配置，目标客户端仍需原有登录或本地配置。
 - 转换文件可被解析，不等于已在该客户端调用模型续聊。当前证据见 [兼容性](docs/compatibility.md)。
 - 目标文件系统需支持硬链接（例如 NTFS、ext4）；不支持时写入失败，保留源文件。
 

@@ -24,6 +24,7 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 - 两份来源的导入目标分别得到 9 条和 33 条上下文消息；原生读取未包含工具执行或思考记录。Pi 默认迁移当前活动分支，未选中的分支记录计入丢弃项。
 - 用户明确指定的一条真实 Codex 会话完成实际剪切，Pi 原生读取了 9 条对话消息；原 transcript、threads 行、关联记录和已知索引项已删除。其他 Codex ID 和指定保留的 Pi 文件未变。
 - 另一次已保留的真实 Codex → Pi 复制：353 条用户/助手消息、29 个摘要；文本和摘要序列 hash 一致，原文件 hash 未变。Pi 根据最新摘要构建续聊上下文。
+- 标题/模型修复后，同一份 Pi 目标保留原 ID，原生 `getSessionName()` 返回原 Codex 标题；353 条消息、29 个摘要保持不变，5 条有效续聊消息的内容 hash 一致。原生上下文模型改为目标 Pi 默认值，源 Codex 文件 hash 未变；桥接 manifest 的目标 hash 同步更新。额外启动已安装 Pi 的 RPC `get_state`，确认原标题、目标默认模型、5 条上下文且未 streaming；启动输出未出现模型恢复警告。仍未调用模型。
 - 单元测试使用不含私人信息的合成 fixtures；真实原生验证在忽略目录执行，私人对话不进入仓库。
 
 ## 数据库与删除规则
@@ -41,6 +42,8 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 ## 格式与损失
 
 - 默认保留用户/助手文本、摘要及目标可表示的用户图片。工具调用/结果、思考、系统与运行记录在序列化前过滤，`filtered:*` 合并进 manifest 丢弃计数。
+- Codex 原生标题从按 ID、rollout_path 匹配的 threads 行读取，优先 name，再 title；未命中时保留日志标题。Pi 写 session_info，DSH/Claude/Qwen/WorkBuddy 写各自标题记录，OpenCode 写 session.title，Codex 原生目标写 threads 的 title/name。Codex 便携输出仍由上游适配器计入 session:title 损失。
+- 源 Session.model / model_provider 清空后才传入序列化器。Pi 0.87.1 会从每条历史助手消息恢复模型，即使不存在 model_change；完全删字段仍会产生无效恢复目标。因此 Pi 使用目标 home/settings.json 和 cwd/.pi/settings.json 的默认 provider/model，显式 CLI 标识优先；无完整目标值时在写入前失败。源 thinking_level_change 被过滤，续聊推理设置由 Pi 自身决定。其他格式的必需历史字段使用格式占位值或显式目标标识。
 - manifest 的来源摘要、SHA-256 对应原文件；数据库来源使用所选会话的稳定 JSON 快照，不是整个数据库文件 hash。
 - Pi 的额外 system/bashExecution/custom 运行记录经过边界适配后过滤；分支/压缩摘要保留，未选中的分支不重新加入上下文。
 - DSH 写入借用 Pi 的对话归并，再建立 turn/step 生命周期；摘要通过 surface replacement 更新模型上下文。DSH、WorkBuddy 暂不迁移图片 blob。
@@ -57,6 +60,8 @@ Claude Code 和 WorkBuddy 是额外兼容的闭源客户端；本仓库自身完
 | --- | --- |
 | [session-migrate](https://github.com/xhluca/session-migrate/tree/a3b0fae4a38bbe0c0c89876f2f2ee6ee0ad154c4) | MIT 的 Codex / Pi / OpenCode / Qwen / Claude 解析与序列化，发布依赖固定 0.11.0 |
 | [Codex app-server 文档](https://developers.openai.com/codex/app-server/) | 原生 resume/read 验证接口 |
+| [Pi 0.87.1 session-manager](https://github.com/earendil-works/pi-mono/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/session-manager.ts) | session_info 名称与历史助手消息的模型恢复规则；与本机 0.87.1 原生读取交叉核对 |
+| [Pi 0.87.1 SDK](https://github.com/earendil-works/pi-mono/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/sdk.ts) / [settings-manager](https://github.com/earendil-works/pi-mono/blob/f07218c4d4bbc12bef056a7058c3dd49dfe41abe/packages/coding-agent/src/core/settings-manager.ts) | 恢复失败警告、默认模型/推理设置，以及全局和项目 settings.json 的路径与优先级 |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness/tree/86a402200d95fecef4529d969836f1fe13c6cb0d) | v4 codec、范围引用、surface replacement 与生命周期；以下载发布包的恢复器验证 |
 | [OpenCode v1.19.1 import](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/cli/cmd/import.ts) | 官方 bundle 到 session/message/part 的写入规则 |
 | [OpenCode v1.19.1 export](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/cli/cmd/export.ts) | DB 原生读回验证 |

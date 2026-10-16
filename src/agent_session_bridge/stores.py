@@ -154,6 +154,22 @@ def source_store(session) -> dict | None:
     return None
 
 
+def codex_title(session) -> str | None:
+    store = source_store(session)
+    if store is None:
+        return session.title
+    with connection(Path(store["database"])) as c:
+        require(c, "threads", {"id", "rollout_path", "title"})
+        fields = "rollout_path,title" + (",name" if "name" in columns(c, "threads") else "")
+        row = c.execute(
+            f"SELECT {fields} FROM threads WHERE id=?", (session.session_id,)
+        ).fetchone()
+        if row is None or not same_path(Path(row["rollout_path"]), session.source_path):
+            return session.title
+        name = row["name"] if "name" in row.keys() else None
+        return name or row["title"] or session.title
+
+
 def _ms(stamp: str | None) -> int:
     return (
         int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1000)

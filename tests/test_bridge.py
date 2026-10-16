@@ -123,6 +123,80 @@ def test_conversion_matrix(tmp_path, source_format, target_format):
     assert source_path.read_bytes() == original
 
 
+@pytest.mark.parametrize("target", core.FORMATS)
+def test_source_model_and_provider_are_not_migrated(tmp_path, target):
+    source = replace(
+        seed(tmp_path / "seed"), model="PRIVATE_SOURCE_MODEL", model_provider="PRIVATE_PROVIDER"
+    )
+    payload, _, _ = core.prepare(source, target=target, output_dir=tmp_path / "out")
+    if target == "dsh":
+        from compression import zstd
+
+        payload = zstd.decompress(payload)
+    assert b"PRIVATE_SOURCE_MODEL" not in payload
+    assert b"PRIVATE_PROVIDER" not in payload
+
+
+def test_pi_uses_target_model_defaults_and_keeps_title(tmp_path, monkeypatch):
+    home = tmp_path / "pi-home"
+    home.mkdir()
+    (home / "settings.json").write_text(
+        json.dumps({"defaultProvider": "target-provider", "defaultModel": "target-model"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(home))
+    source = seed(tmp_path / "seed")
+    payload, output, manifest = core.prepare(source, target="pi", output_dir=tmp_path / "out")
+    core.apply(source, payload, output, manifest)
+    result = core.load(output)
+    assert result.title == source.title
+    assert (result.model_provider, result.model) == ("target-provider", "target-model")
+    rows = [json.loads(line) for line in payload.splitlines()]
+    assert not any(row["type"] == "thinking_level_change" for row in rows)
+
+
+def test_pi_requires_destination_model_when_defaults_are_missing(tmp_path):
+    source = seed(tmp_path / "seed")
+    with pytest.raises(SessionMigrateError, match="--provider.*--model"):
+        core.prepare(source, target="pi", target_home=tmp_path / "unconfigured-pi")
+    assert source.source_path.exists()
+
+
+def test_pi_explicit_model_overrides_target_defaults(tmp_path):
+    source = seed(tmp_path / "seed")
+    payload, output, manifest = core.prepare(
+        source, target="pi", target_home=tmp_path / "no-settings",
+        provider="chosen-provider", model="chosen-model",
+    )
+    core.apply(source, payload, output, manifest)
+    result = core.load(output)
+    assert (result.model_provider, result.model) == ("chosen-provider", "chosen-model")
+
+
+def test_pi_project_model_defaults_override_agent_defaults(tmp_path):
+    source = seed(tmp_path / "seed")
+    config = source.cwd / ".pi" / "settings.json"
+    config.parent.mkdir()
+    config.write_text(
+        json.dumps({"defaultProvider": "project-provider", "defaultModel": "project-model"}),
+        encoding="utf-8",
+    )
+    payload, output, manifest = core.prepare(source, target="pi", output_dir=tmp_path / "out")
+    core.apply(source, payload, output, manifest)
+    result = core.load(output)
+    assert (result.model_provider, result.model) == ("project-provider", "project-model")
+
+
+@pytest.mark.parametrize("settings", [[], {"defaultModel": 42}])
+def test_pi_rejects_invalid_target_settings(tmp_path, settings):
+    home = tmp_path / "invalid-settings"
+    home.mkdir()
+    (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    source = seed(tmp_path / "seed")
+    with pytest.raises(SessionMigrateError, match="Pi"):
+        core.prepare(source, target="pi", target_home=home)
+
+
 def test_copy_move_and_no_overwrite(tmp_path):
     source = seed(tmp_path / "seed")
     payload, output, manifest = core.prepare(source, target="codex", output_dir=tmp_path / "out")
@@ -187,6 +261,8 @@ def test_conversation_keeps_summaries_and_user_images_only(tmp_path):
         "filtered:context": 1,
         "filtered:message": 1,
         "filtered:opaque": 1,
+        "filtered:session_model": 1,
+        "filtered:session_model_provider": 1,
         "filtered:thinking": 1,
         "filtered:tool_call": 1,
         "filtered:tool_result": 1,
@@ -275,6 +351,10 @@ def test_project_batch_preview_and_apply(tmp_path, capsys):
         str(project),
         "--target-home",
         str(out),
+        "--provider",
+        "target-provider",
+        "--model",
+        "target-model",
     ]
     assert main(argv) == 0
     preview = json.loads(capsys.readouterr().out)

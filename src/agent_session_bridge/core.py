@@ -82,6 +82,8 @@ def load(path: Path, source_format: str = "auto") -> Session:
     session = load_session(path, None if source_format == "auto" else AgentFormat(source_format))
     if session.source_format.value not in FORMATS:
         raise SessionMigrateError(f"not a supported bridge format: {session.source_format.value}")
+    if session.source_format == AgentFormat.CODEX:
+        session = replace(session, title=stores.codex_title(session))
     return session
 
 
@@ -187,7 +189,14 @@ def prepare(
             events.append(event)
         else:
             filtered[f"filtered:{event.kind.value}"] += 1
-    conversation = replace(session, events=tuple(events))
+    for field in ("model", "model_provider"):
+        if getattr(session, field):
+            filtered[f"filtered:session_{field}"] += 1
+    conversation = replace(session, events=tuple(events), model=None, model_provider=None)
+    if target == "pi":
+        provider, model = pi_context.target_model(
+            target_home or agent_home(target), working_dir, provider=provider, model=model
+        )
     if target == "workbuddy":
         payload, dropped = workbuddy.serialize(conversation, session_id=target_id, cwd=working_dir)
         native_path = (
