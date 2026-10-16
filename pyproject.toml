@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-session-bridge"
+version = "0.1.0"
+description = "Copy or cut conversation context between coding agents, including native session indexes"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+dependencies = ["session-migrate==0.11.0"]
+
+[project.urls]
+Repository = "https://github.com/Amiyadesi/agent-session-bridge"
+Issues = "https://github.com/Amiyadesi/agent-session-bridge/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10", "ruff>=0.17,<0.18"]
+
+[project.scripts]
+agent-session-bridge = "agent_session_bridge.cli:main"
+asb = "agent_session_bridge.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"share/agent-session-bridge/skills/migrate-agent-session" = ["skills/migrate-agent-session/SKILL.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
