@@ -1,11 +1,12 @@
 # 格式依据与验证边界
 
-验证日期：2026-10-16，Windows / Python 3.14.3。运行依赖固定为 MIT 项目 `session-migrate==0.11.0`。
+验证日期：2026-10-17，Windows / Python 3.14.3。运行依赖固定为 MIT 项目 `session-migrate==0.11.0`。
 
 ## 已验证的客户端
 
 | Agent | 存储与迁移 | 本次原生检查 |
 | --- | --- | --- |
+| ZCode CLI / 桌面 | `.zcode/cli/db/db.sqlite` session/message/part/session_entry 与 `.zcode/v2/tasks-index.sqlite`；读取 sequence、回退分支、压缩边界 | 上游固定 commit `aac4755666d09fdcd70272fcf063c077a639015f`（源码产品版本 3.15.1、存储版本 0.16.5）；用本机 3.12.3 数据库结构的空隔离库验证写入和剪切。官方 getSession/listSessions/messages 模块通过 Node 24.14.0 读取真实迁移内容；仅编译 TypeScript 和重定向 import，未改读取逻辑。未运行发布版 GUI 或模型续聊 |
 | Codex CLI 0.162.1 | rollout JSONL + `state_5.sqlite` 的 threads / 关联行 | 隔离 app-server `thread/resume`、`thread/read` 返回真实迁移对话；未发送 `turn/start` |
 | Pi 0.87.1 | v3 JSONL 会话树，当前分支、压缩摘要 | `SessionManager.open()`、`buildSessionContext()` 读取真实迁移对话 |
 | DSH 0.2.0-rc.2 | v4 JSONL，独立 checksummed zstd frames | 发布包 v4 `restoreReleasedV4Artifact` 接受真实对话日志；未启动完整交互 UI |
@@ -20,6 +21,10 @@
 Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本仓库自身完整使用 MIT 协议开源，不分发这些客户端。
 
 ## 真实数据验证结果
+
+- ZCode 增加 **83 次真实会话转换与 20 次原生剪切**：真实 Codex、Pi 来源各覆盖十种来源格式到 ZCode、ZCode 到十种目标；另从本机真实 ZCode 会话导出 Pi（29 条有效上下文）。测试使用隔离副本，两个真实源文件 SHA-256 不变，真实 ZCode 所选会话快照 hash 不变。
+- ZCode 原生剪切精确清理所选会话及已有桌面索引；检查 session/message/part/session_entry/input_history 已删除、其他 session ID 集合不变。单元测试另覆盖用量、session 设置、任务分组引用和双库异常回滚。
+- 官方存储模块从隔离 ZCode 数据库回读 Codex 的 **413 条历史记录**（381 条对话、32 条摘要）及 Pi 的 **31 条记录**，角色/文本序列 hash 一致、原标题保留、无历史模型/provider 选择。Codex 的最新摘要与其后消息构成 7 条有效上下文。官方查询按目标 directory 发现新 ID；桌面 GUI 是否显示、完整 runtime hydration 和模型续聊未测试。
 
 - 两份本地真实来源：Codex、Pi。分别转换到七种格式，再将七种结果各转到七种目标，合计 **98 条转换路线**通过解析和过滤检查。
 - 使用真实对话的副本验证 **7 × 7 = 49 条原生目录剪切路线**。数据库来源按 ID 删除所选记录；其余会话 ID 集合保持不变。OpenCode 的 message/part 和桥接导出文件一并清理。
@@ -75,6 +80,31 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 - 文件写入拒绝覆盖；原子创建需要目标文件系统支持硬链接（如 NTFS、ext4）。Windows 继承父目录 ACL；POSIX 临时文件使用私有权限。
 
 ## 来源与选型
+
+### ZCode
+
+ZCode 本地 codec 复用 Pi 的消息归并，使用带 `format=zcode` / `schema_version=1` 的桥接 JSON，不冒充官方导入格式。
+调用固定引擎前仅映射为 OpenCode 枚举，manifest 保留 ZCode 来源身份。便携文件剪切只删除文件，原生 ID 选择才清理数据库。
+
+读取 `sequence IS NULL, sequence, time_created, rowid` 的消息顺序及各 message 内的 part sequence；
+导出采用官方 compact-first / branch-cut 语义，保留有效分支、最新摘要和 preserved segment。
+不读附件引用、不复制 blob，忽略模型/权限/session_entry 运行状态并计数。
+目标标题写 `title_source=custom` 和桌面 `title_overridden`；桌面 `provider=glm` 表示产品 runtime，未写历史模型选择。
+
+原生 home 必须已初始化。会话库和已有桌面库通过 SQLite ATTACH 在同一事务内修改，普通异常回滚；
+WAL 模式不承诺断电时跨库原子性。剪切清理所选输入历史、session 设置、用量和精确 task/group 引用；
+排队输入、运行中用量、子会话、工作流、自动化引用会阻止剪切。
+共享分组、项目设置、附件、调试 rollout、exec 文件和备份保留。
+
+以下均固定于 commit `aac4755666d09fdcd70272fcf063c077a639015f`：
+
+| 来源 | 用途 |
+| --- | --- |
+| [SQLite schema](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/migrations.ts) / [消息 repository](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/repositories/messages.ts) / [codec](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/codecs.ts) | 官方表结构、顺序、用户旧 model 空对象及模型字段读取依据；本机数据库结构交叉核对 |
+| [History hydration](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/core/src/agent/session-history-hydrator.ts) / [compact](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/core/src/agent/compact-session.ts) / [rewind](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/contracts/src/rewind/index.ts) | 有效分支、摘要和压缩保留段算法 |
+| [Desktop task index](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/packages/services/src/session/taskIndexRepo.ts) / [index syncer](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/packages/services/src/zcode-agent/zcodeTaskIndexSyncer.ts) / [project ID](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/bootstrap/src/app/paths.ts) | task meta_json、glm 产品 provider、custom 标题、分组引用、workspace/project 键和双库事务依据 |
+
+### 其他客户端
 
 优先复用现有事件模型；针对数据库采用已安装发布版 schema 和原生读回校验。
 只复制 transcript 不能覆盖本次用户要求的原生索引与剪切，因此增加了范围明确的 SQLite 操作。

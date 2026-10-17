@@ -66,6 +66,9 @@ def _paths(args: argparse.Namespace) -> list[Path]:
         if args.input.is_symlink() and getattr(args, "move", False):
             raise SessionMigrateError("--move does not delete symlink sources")
         return [args.input]
+    if (args.input and args.input.parent.is_file()
+            and args.input.parent.name in {"db.sqlite", "opencode.db"}):
+        return [args.input]
     if args.input and not args.input.is_dir():
         raise SessionMigrateError("input does not exist")
     if (

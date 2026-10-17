@@ -112,6 +112,10 @@ def database(kind: str, home: Path) -> Path:
 def descriptor(
     kind: str, home: Path, *, user_id: str | None = None, state_database: Path | None = None
 ) -> dict:
+    if kind == "zcode":
+        from agent_session_bridge import zcode
+
+        return zcode.descriptor(home)
     if kind == "antigravity-desktop":
         return antigravity_desktop.descriptor(home, state_database)
     db = database(kind, home)
@@ -148,6 +152,10 @@ def descriptor(
 
 def source_store(session) -> dict | None:
     kind, path = session.source_format.value, session.source_path
+    if kind == "zcode" and path.parent.name == "db.sqlite" and path.parent.is_file():
+        if path.name != session.session_id:
+            raise SessionMigrateError("ZCode DB identity does not match selected session")
+        return descriptor(kind, path.parent.parent.parent.parent)
     if kind == "antigravity-desktop":
         home = path.parent.parent
         if path.parent.name == "conversations" and (
@@ -210,6 +218,11 @@ def register(store: dict, manifest: dict, payload: bytes, source) -> None:
     sid, cwd = target["session_id"], target["cwd"]
     now, created = int(time.time() * 1000), _ms(source.started_at)
     title = source.title or "Imported conversation"
+    if kind == "zcode":
+        from agent_session_bridge import zcode
+
+        zcode.register(store, target, payload)
+        return
     if kind == "antigravity-desktop":
         antigravity_desktop.register(store, target, payload, title, now)
         return
@@ -445,6 +458,11 @@ def load_opencode(path: Path):
 
 def _delete_rows(c, store: dict, sid: str, path: Path | None = None) -> None:
     kind = store["kind"]
+    if kind == "zcode":
+        from agent_session_bridge import zcode
+
+        zcode.delete(c, store, sid)
+        return
     if kind in {"antigravity", "antigravity-desktop"}:
         expected = Path(store["home"]) / "conversations" / f"{sid}.db"
         if path is None or not same_path(expected, path):
@@ -573,13 +591,19 @@ def remove_source(session) -> None:
     store = source_store(session)
     if session.source_format.value == "antigravity-desktop" and store:
         antigravity_desktop.ensure_closed(Path(store["home"]), Path(store["database"]))
-    virtual = session.source_format.value == "opencode" and store is not None
+    kind = session.source_format.value
+    virtual = kind in {"opencode", "zcode"} and store is not None
     changes = _caches(session, store)
     renamed = []
     written = []
     try:
         with connection(Path(store["database"]), write=True) if store else _no_database() as c:
-            if virtual:
+            if virtual and kind == "zcode":
+                from agent_session_bridge import zcode
+
+                zcode.attach(c, store)
+                data = zcode.source_bytes(session.source_path, c)
+            elif virtual:
                 data = opencode_bytes(session.source_path, c)
             elif session.source_format.value in {"antigravity", "antigravity-desktop"}:
                 data = antigravity.move_bytes(session.source_path)
@@ -617,7 +641,7 @@ def remove_source(session) -> None:
                         target.get("session_id") != session.session_id
                         or target.get("sha256") != hashlib.sha256(bundle.read_bytes()).hexdigest()
                     ):
-                        raise SessionMigrateError("OpenCode bridge export changed; source retained")
+                        raise SessionMigrateError(f"{kind} bridge export changed; source retained")
                     paths = [bundle]
                 else:
                     paths = []

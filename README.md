@@ -2,7 +2,7 @@
 
 终端会话迁移工具 + AI skill。单个会话、会话 ID、项目目录批量转换；复制或剪切。
 
-支持 **Codex、Pi、DeepSeek Harness (DSH)、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI (agy) 和桌面 IDE** 互转。
+支持 **Codex、Pi、DeepSeek Harness (DSH)、OpenCode、Qwen Code、Claude Code、WorkBuddy、Antigravity CLI (agy)、Antigravity 桌面 IDE 和 ZCode** 互转。
 本项目使用 MIT 协议开源；Claude Code、WorkBuddy、Antigravity 是兼容目标，不代表这些客户端开源。
 
 复用 MIT 项目 `session-migrate==0.11.0` 的格式适配器，补充 DSH v4 和 Windows 写入。
@@ -98,6 +98,38 @@ opencode import opencode-import.json
 明确传入导出 JSON 文件时，源是该文件；剪切该文件不会删除其来源数据库会话。
 要剪切数据库中的会话，使用上面的 `--from opencode --session ...`。
 
+### ZCode（Z.ai）
+
+格式名 `zcode`。终端和桌面共用 `~/.zcode/cli/db/db.sqlite`；
+桌面另有 `~/.zcode/v2/tasks-index.sqlite`。先由客户端初始化，原生写入和剪切前关闭 ZCode。
+
+```powershell
+# 某个项目的 Codex 会话复制到 ZCode
+asb convert --from codex --to zcode --project "D:\work\my-project" --apply
+
+# 单条 ZCode 会话剪切到 Pi
+asb list --from zcode --project "D:\work\my-project"
+asb convert --from zcode --session sess_SOURCE_UUID --to pi --move --apply
+
+# 便携 JSON，再转入另一个 ZCode 数据目录
+asb convert source.jsonl --to zcode --output zcode-session.json --apply
+asb convert zcode-session.json --to zcode --target-home "D:\portable\.zcode" --apply
+```
+
+`--source-root` / `--target-home` 指向 **`.zcode` 数据根**，不是 `cli` 或 `db` 目录。
+默认支持桌面 `ZCODE_DATA_BASE_DIR` 指定的 base；自定义 CLI 存储请显式传入数据根。
+便携 JSON 是本工具的交换格式，需再次转换到原生 home；剪切便携文件不删除其原始数据库会话。
+
+保留标题，按原生 `sequence` 排序；导出有效回退分支、最新压缩摘要及后续上下文。
+ZCode 目标保留历史与压缩边界；模型、provider、推理设置由目标客户端配置决定，
+不接受 `--provider` / `--model`。图片与附件暂不迁移，损失计入 manifest。
+原生写入同步已有桌面任务索引；剪切清理所选 session/message/part、输入历史、用量、会话设置、任务列表和分组引用。
+共享分组与其他会话保留。排队输入、运行中用量、关联子会话、工作流或自动化会阻止剪切，仍可复制。
+两库在同一 SQLite 事务内修改，普通异常回滚；WAL 模式下不承诺断电时跨库原子性。
+
+原生结果返回 `zcode --resume NEW_ID`；在对应项目目录运行。桌面从历史列表打开。
+官方存储模块读取验证通过；GUI 列表和模型续聊未验证。
+
 ### Antigravity CLI（agy）
 
 支持 CLI 的 SQLite 会话，默认 home 是 `~/.gemini/antigravity-cli`。
@@ -162,6 +194,7 @@ asb convert source.jsonl --to antigravity-desktop --target-home "D:\agy-data" --
 原生目标目录需要先由对应客户端初始化，CLI 不创建或猜测客户端的数据库结构。
 支持已验证的 Codex `state_*.sqlite`、WorkBuddy `workbuddy.db`、OpenCode `opencode.db`、
 Antigravity CLI `conversation_summaries.db` 和桌面 `state.vscdb`；
+ZCode 使用 `cli/db/db.sqlite` 与已有 `v2/tasks-index.sqlite`；
 遇到不兼容结构会明确失败，并保留源会话。
 
 ```powershell
@@ -208,9 +241,14 @@ asb convert source.jsonl --to dsh --apply
 - 目标文件系统需支持硬链接（例如 NTFS、ext4）；不支持时写入失败，保留源文件。
 
 **便携输出目录**里的 Codex / Claude / Qwen / DSH 文件不会自动出现在原生客户端列表；默认原生目录或 `--target-home` 才按客户端布局保存。Pi 可直接 `pi --session <path>` 打开便携文件。
-OpenCode / WorkBuddy / Antigravity 的便携输出也不注册数据库。
+OpenCode / WorkBuddy / Antigravity / ZCode 的便携输出也不注册数据库。
 
 ## 真实会话验证
+
+ZCode 新增 **83 次真实会话转换、20 次原生剪切**：真实 Codex/Pi 副本覆盖与十种格式的双向路线，
+另从本地真实 ZCode 会话导出到 Pi。检查标题、源模型过滤、双库清理和其他会话保留，原始文件未变。
+固定版本的 ZCode 官方 `getSession` / `listSessions` / `messages` 模块从隔离 DB 读回了
+Codex 的 413 条历史记录和 Pi 的 31 条记录；前者有效续聊上下文为 7 条。未启动 GUI 或调用模型。
 
 Windows 上用本地真实 Codex、Pi 会话验证了 **98 条格式转换路线**，以及真实对话副本的 **49 条原生剪切路线**。
 Codex / Pi / OpenCode / Claude 官方 SDK / WorkBuddy 原生读取通过；DSH v4 恢复器通过，Qwen 原生列表发现导入会话。

@@ -20,7 +20,7 @@ from session_migrate.model import (
     TargetFormat,
 )
 
-from agent_session_bridge import antigravity, antigravity_desktop, core, dsh, workbuddy
+from agent_session_bridge import antigravity, antigravity_desktop, core, dsh, workbuddy, zcode
 from agent_session_bridge.cli import main
 
 STAMP = "2026-10-15T00:00:00Z"
@@ -74,7 +74,10 @@ def seed(directory: Path, *, name: str = "source.jsonl", cwd: Path | None = None
 def migrated(session: Session, target: str, directory: Path) -> Path:
     # Fixtures retain tools so each source parser is exercised before CLI filtering.
     identifier = str(uuid.uuid4())
-    if target == "workbuddy":
+    if target == "zcode":
+        payload, _ = zcode.serialize(session, session_id="sess_" + identifier, cwd=session.cwd)
+        suffix = ".json"
+    elif target == "workbuddy":
         payload, _ = workbuddy.serialize(session, session_id=identifier, cwd=session.cwd)
         suffix = ".jsonl"
     elif target == "dsh":

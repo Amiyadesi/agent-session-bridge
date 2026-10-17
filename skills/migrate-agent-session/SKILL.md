@@ -1,6 +1,6 @@
 ---
 name: migrate-agent-session
-description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code, WorkBuddy, Antigravity CLI (agy) and desktop IDE with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
+description: Copy or cut conversation context between Codex, Pi, DeepSeek Harness, OpenCode, Qwen Code, Claude Code, WorkBuddy, Antigravity CLI (agy), Antigravity desktop IDE and ZCode with the local agent-session-bridge CLI. Supports a transcript, exact session ID or project batch, including native database indexes; excludes credentials and agent configuration.
 ---
 
 # Migrate agent sessions
@@ -23,7 +23,7 @@ If not installed, this project needs Python 3.14+; create a project venv and run
 - Use `--cwd` only when the user intends to relocate the working directory.
 - Pi requires a destination model because it restores model selection from historical assistant messages. The CLI reads defaults from the target home `settings.json`, then target cwd `.pi/settings.json`; `--provider` / `--model` override them. With no complete target defaults, supply the intended target pair. Never substitute the source model. No settings files are changed.
 
-Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`, `antigravity`, `antigravity-desktop`.
+Supported names: `codex`, `pi`, `dsh`, `opencode`, `qwen`, `claude`, `workbuddy`, `antigravity`, `antigravity-desktop`, `zcode`.
 Use `asb formats` / `asb convert --help` for available options.
 
 ## Execute
@@ -46,7 +46,10 @@ For custom target homes, launch the client with its corresponding home environme
 ## Format limits
 
 - Native OpenCode selection: `asb convert --from opencode --session <id> --to pi --move --apply`. Default selection reads its DB; `--source-root` can point to the directory containing `opencode.db`. A manually supplied JSON export is a standalone file; cutting that export does not delete its original DB session.
-- Codex / WorkBuddy / OpenCode / Antigravity native target homes must already contain client-initialized databases. Unknown schemas or required fields fail clearly. Use `--output-dir` for portable files without DB registration.
+- Codex / WorkBuddy / OpenCode / Antigravity / ZCode native target homes must already contain client-initialized databases. Unknown schemas or required fields fail clearly. Use `--output-dir` for portable files without DB registration.
+- ZCode uses `--from zcode` / `--to zcode` for CLI and desktop. Example: `asb convert --from codex --to zcode --project <directory> --apply`; cut a native source with `asb convert --from zcode --session sess_<id> --to pi --move --apply`. Home is the `.zcode` data root containing `cli/db/db.sqlite`, plus optional desktop `v2/tasks-index.sqlite`; pass that root via `--source-root` / `--target-home`. Close clients first. The desktop data-base environment override is respected; custom CLI storage needs an explicit root. Both indexes are updated in one SQLite transaction; WAL does not guarantee cross-DB atomicity after power loss.
+- ZCode exports the active rewind branch, latest summary and following context in native sequence order. Titles survive; source models/settings do not. Target model selection remains client-owned; omit `--provider`/`--model`. File/image attachments are omitted and counted. Pending inputs, running usage and linked child/workflow/automation sessions block cuts; copy is supported. Cuts remove the selected DB rows, input history, usage, session settings, desktop task/group references and bridge bundle, preserving other sessions and shared groups.
+- ZCode portable `.json` is a bridge bundle, not an official import file: convert it again to an initialized native home. Cutting a bundle only removes the bundle. Native `resume` is `zcode --resume <new-id>` from the target project; desktop opens via its history UI. Pinned official storage modules read back imported sessions; GUI discovery and model continuation remain unverified.
 - For a Git project, start OpenCode once in the intended working directory to initialize its project index before importing there.
 - WorkBuddy handles local sessions and its DB/cache. Multiple destination accounts require `--workbuddy-user-id`. Resume from WorkBuddy's session list. Blob images are omitted and counted.
 - DSH reads v4 JSONL/zstd. Older logs must be upgraded by DSH first. Multiple generations block a move.

@@ -29,11 +29,12 @@ from agent_session_bridge import (
     pi_context,
     stores,
     workbuddy,
+    zcode,
 )
 
 FORMATS = (
     "codex", "pi", "dsh", "opencode", "qwen", "claude", "workbuddy",
-    "antigravity", "antigravity-desktop",
+    "antigravity", "antigravity-desktop", "zcode",
 )
 
 
@@ -45,6 +46,8 @@ def disk_path(path: Path) -> Path:
 
 
 def agent_home(agent: str) -> Path:
+    if agent == "zcode":
+        return zcode.home()
     if agent == "antigravity-desktop":
         return antigravity_desktop.home()
     if agent == "opencode":
@@ -67,6 +70,10 @@ def load(
     path: Path, source_format: str = "auto", *, state_database: Path | None = None
 ) -> Session:
     path = disk_path(path)
+    if path.parent.name == "db.sqlite" and path.parent.is_file():
+        if source_format not in {"auto", "zcode"}:
+            raise SessionMigrateError("native ZCode DB requires --from zcode")
+        return zcode.parse(path)
     if path.parent.name == "opencode.db" and path.parent.is_file():
         if source_format not in {"auto", "opencode"}:
             raise SessionMigrateError("native OpenCode DB requires --from opencode")
@@ -79,8 +86,11 @@ def load(
         elif path.suffix == ".zstd":
             source_format = "dsh"
         elif path.suffix == ".json":
-            # OpenCode is the supported JSON-bundle format; Kilo is not a bridge target.
-            source_format = "opencode"
+            value = json.loads(path.read_bytes())
+            source_format = (
+                "zcode" if isinstance(value, dict) and value.get("format") == "zcode"
+                else "opencode"
+            )
         elif path.suffix == ".jsonl":
             with path.open("r", encoding="utf-8-sig") as stream:
                 first = json.loads(stream.readline(1024 * 1024))
@@ -102,6 +112,8 @@ def load(
         return dsh.parse(path)
     if source_format == "workbuddy":
         return workbuddy.parse(path)
+    if source_format == "zcode":
+        return zcode.parse(path)
     if source_format == "pi":
         return pi_context.parse(path)
     session = load_session(path, None if source_format == "auto" else AgentFormat(source_format))
@@ -115,6 +127,12 @@ def load(
 def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
     if source_format == "auto":
         raise SessionMigrateError("directory/ID/project selection requires --from")
+    if source_format == "zcode":
+        home = root or agent_home(source_format)
+        if (home / "cli" / "db" / "db.sqlite").is_file():
+            return zcode.paths(home)
+        if root is None:
+            raise SessionMigrateError("ZCode DB missing; pass --source-root or a portable bundle")
     if source_format == "opencode":
         home = root or agent_home(source_format)
         if (home / "opencode.db").is_file():
@@ -140,7 +158,8 @@ def source_paths(source_format: str, root: Path | None = None) -> list[Path]:
     if not any(path.is_dir() for path in roots):
         raise SessionMigrateError(f"no {source_format} session root found; pass --source-root")
     pattern = {
-        "opencode": "*.json", "antigravity": "*.db", "antigravity-desktop": "*.db",
+        "opencode": "*.json", "zcode": "*.json", "antigravity": "*.db",
+        "antigravity-desktop": "*.db",
     }.get(source_format, "*.jsonl")
     paths = sorted(
         {
@@ -210,12 +229,12 @@ def prepare(
     if target_state_db is not None and target != "antigravity-desktop":
         raise SessionMigrateError("--target-state-db requires an Antigravity desktop target")
     if home is not None and target in {
-        "codex", "workbuddy", "opencode", "antigravity", "antigravity-desktop",
+        "codex", "workbuddy", "opencode", "antigravity", "antigravity-desktop", "zcode",
     }:
         native_store = stores.descriptor(
             target, home, user_id=workbuddy_user_id, state_database=target_state_db
         )
-    target_id = str(uuid.uuid4())
+    target_id = ("sess_" if target == "zcode" else "") + str(uuid.uuid4())
     working_dir = (cwd or session.cwd or Path.cwd()).expanduser().resolve()
     if not working_dir.is_dir():
         raise SessionMigrateError("target working directory does not exist; pass --cwd")
@@ -244,7 +263,16 @@ def prepare(
         provider, model = pi_context.target_model(
             target_home or agent_home(target), working_dir, provider=provider, model=model
         )
-    if target == "workbuddy":
+    if target == "zcode":
+        if provider or model:
+            raise SessionMigrateError(
+                "ZCode uses target client model settings; omit --provider/--model"
+            )
+        payload, dropped = zcode.serialize(conversation, session_id=target_id, cwd=working_dir)
+        native_path = (home or Path.cwd() / "migrations") / "asb-imports" / f"{target_id}.json"
+        suffix, target_version = ".json", zcode.VERSION
+        warnings = [{"code": "zcode_images", "message": "ZCode attachments are omitted."}]
+    elif target == "workbuddy":
         payload, dropped = workbuddy.serialize(conversation, session_id=target_id, cwd=working_dir)
         native_path = (
             home / "projects" / workbuddy.project_key(working_dir) / f"{target_id}.jsonl"
@@ -281,6 +309,9 @@ def prepare(
             # The shared codec uses the CLI enum; the manifest retains the desktop identity.
             conversation = replace(conversation, source_format=AgentFormat.ANTIGRAVITY,
                                    cli_version=None)
+        elif conversation.source_format.value == "zcode":
+            conversation = replace(conversation, source_format=AgentFormat.OPENCODE,
+                                   cli_version=None)
         # Windows rollout paths contain colons; serializers and path helpers handle these.
         artifact = convert_session(
             conversation,
@@ -316,6 +347,8 @@ def prepare(
     )
     if target == "dsh" and not destination.name.endswith(".jsonl.zstd"):
         raise SessionMigrateError("DSH output filename must end in .jsonl.zstd")
+    if target == "zcode" and destination.suffix != ".json":
+        raise SessionMigrateError("ZCode portable output filename must end in .json")
     if target in {"antigravity", "antigravity-desktop"} and destination.suffix != ".db":
         raise SessionMigrateError("Antigravity output filename must end in .db")
     if destination.resolve() == session.source_path.resolve():
@@ -363,6 +396,10 @@ def _source_can_move(session: Session) -> None:
     path = session.source_path
     if path.is_symlink():
         raise SessionMigrateError("--move does not delete symlink sources")
+    if session.source_format.value == "zcode" and store:
+        with stores.connection(Path(store["database"])) as c:
+            zcode.attach(c, store, write=False)
+            zcode.check_cut(c, store, session.session_id)
     if session.source_format.value == "antigravity-desktop":
         antigravity.ensure_closed(path)
         if path.with_suffix(".pb").exists():
@@ -468,4 +505,5 @@ def resume_command(target: str, path: Path, session_id: str, *, native: bool = F
         "workbuddy": [],
         "antigravity": ["agy", "--conversation", session_id],
         "antigravity-desktop": [],
+        "zcode": ["zcode", "--resume", session_id] if native else [],
     }[target]
