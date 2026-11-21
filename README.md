@@ -225,6 +225,7 @@ asb convert source.jsonl --to dsh --apply
 - 默认预览；`--apply` 才写入。默认复制；`--move --apply` 才剪切。
 - 每次生成新 ID，拒绝覆盖已有目标或 manifest。
 - Codex 原生来源按 ID 和 rollout 路径核对 DB，优先读取 `name`，其次 `title`；独立导出文件只能保留日志自带的标题。标题写入目标支持的命名记录或原生 DB；Codex 便携文件的标题损失仍会计入 manifest。
+- Codex 子代理会话（分页 rollout）只迁移子代理自己的历史；从父会话继承的上下文不迁移，数量计入 manifest 的 `filtered:inherited_subagent_context`。
 - 每个目标旁保存 `.manifest.json`，包含来源、目标、记录统计、丢弃项计数；不包含对话正文。Antigravity 的已写入 manifest 还保存标题，预览仍不输出标题或正文。
 - 剪切前：写入文件和 manifest、校验 SHA-256、解析器回读、确认 ID、注册原生索引、再次确认源文件或数据库会话快照没变化。
 - 写入或回读失败：清理本次创建的目标文件，保留源文件。批量操作逐项处理；失败返回非零退出码，已成功项目保留。
