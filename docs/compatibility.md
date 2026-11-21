@@ -73,6 +73,7 @@ Claude Code、WorkBuddy 和 Antigravity 是额外兼容的闭源客户端；本�
 - Codex 原生标题从按 ID、rollout_path 匹配的 threads 行读取，优先 name，再 title；未命中时保留日志标题。Pi 写 session_info，DSH/Claude/Qwen/WorkBuddy 写各自标题记录，OpenCode 写 session.title，Codex 原生目标写 threads 的 title/name。Codex 便携输出仍由上游适配器计入 session:title 损失。
 - 源 Session.model / model_provider 清空后才传入序列化器。Pi 0.87.1 会从每条历史助手消息恢复模型，即使不存在 model_change；完全删字段仍会产生无效恢复目标。因此 Pi 使用目标 home/settings.json 和 cwd/.pi/settings.json 的默认 provider/model，显式 CLI 标识优先；无完整目标值时在写入前失败。源 thinking_level_change 被过滤，续聊推理设置由 Pi 自身决定。其他格式的必需历史字段使用格式占位值或显式目标标识。
 - manifest 的来源统计、SHA-256 对应原文件；OpenCode 数据库来源使用所选会话的稳定 JSON 快照，Antigravity 使用包含 WAL 的一致 SQLite 备份快照。不会用共享索引 DB 的整体 hash 代替单个会话校验。
+- Codex 分页子代理 rollout（首条 session_meta 带 `subagent_history_start_ordinal`）按 Codex 自身的投影规则读取：边界之前的记录是从父线程继承的模型上下文，不属于该子会话，不迁移，按记录数计入 manifest 的 `filtered:inherited_subagent_context`；边界及之后的记录按普通分页历史解析。边界不是正整数、历史模式不是 paginated 或继承前缀没有写完时明确失败。`history_base` 谱系仍不支持。
 - Pi 的额外 system/bashExecution/custom 运行记录经过边界适配后过滤；分支/压缩摘要保留，未选中的分支不重新加入上下文。
 - DSH 写入借用 Pi 的对话归并，再建立 turn/step 生命周期；摘要通过 surface replacement 更新模型上下文。DSH、WorkBuddy 暂不迁移图片 blob。
 - DSH 多个物理 generation 时拒绝剪切，避免旧版复活；桥接 manifest 不作为 generation。未知必需事件、损坏日志和不支持版本明确失败，不截断修复。
@@ -103,6 +104,21 @@ WAL 模式不承诺断电时跨库原子性。剪切清理所选输入历史、s
 | [SQLite schema](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/migrations.ts) / [消息 repository](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/repositories/messages.ts) / [codec](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/adapters/src/storage/session-store/codecs.ts) | 官方表结构、顺序、用户旧 model 空对象及模型字段读取依据；本机数据库结构交叉核对 |
 | [History hydration](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/core/src/agent/session-history-hydrator.ts) / [compact](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/core/src/agent/compact-session.ts) / [rewind](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/contracts/src/rewind/index.ts) | 有效分支、摘要和压缩保留段算法 |
 | [Desktop task index](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/packages/services/src/session/taskIndexRepo.ts) / [index syncer](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/packages/services/src/zcode-agent/zcodeTaskIndexSyncer.ts) / [project ID](https://github.com/zai-org/ZCode/blob/aac4755666d09fdcd70272fcf063c077a639015f/apps/zcode-cli/packages/bootstrap/src/app/paths.ts) | task meta_json、glm 产品 provider、custom 标题、分组引用、workspace/project 键和双库事务依据 |
+
+### Codex 分页子代理历史
+
+固定的 session-migrate 0.11.0（至 0.13.0 仍然如此）遇到 `subagent_history_start_ordinal` 直接拒绝。
+本仓库在调用该解析器前做边界投影：继承记录替换为只保留 timestamp/ordinal 的占位记录，子会话自己的记录原样交给上游解析器，源文件不改动。
+仅用合成 rollout 验证了格式解析；未用真实子代理会话验证，也未做原生读取或模型续聊检查。
+
+以下均固定于 openai/codex commit `1145028ae47e8119955323d38ce34122d418f951`：
+
+| 来源 | 用途 |
+| --- | --- |
+| [SessionMeta](https://github.com/openai/codex/blob/1145028ae47e8119955323d38ce34122d418f951/codex-rs/protocol/src/protocol.rs#L3634-L3642) | `history_base` 与 `subagent_history_start_ordinal` 的字段定义：边界之前是继承的模型上下文 |
+| [create_with_inherited_model_context](https://github.com/openai/codex/blob/1145028ae47e8119955323d38ce34122d418f951/codex-rs/thread-store/src/live_thread.rs#L168-L193) | 边界 = 继承记录数 + 1；继承记录写在子会话自己的记录之前 |
+| [thread history materialization](https://github.com/openai/codex/blob/1145028ae47e8119955323d38ce34122d418f951/codex-rs/thread-store/src/local/thread_history_materialization.rs#L125-L140) / [投影循环](https://github.com/openai/codex/blob/1145028ae47e8119955323d38ce34122d418f951/codex-rs/thread-store/src/local/thread_history_materialization.rs#L313-L324) | 只读首条 session_meta 的边界；`ordinal < start` 的记录不参与 turn/item 投影 |
+| [rollout ordinal 检查](https://github.com/openai/codex/blob/1145028ae47e8119955323d38ce34122d418f951/codex-rs/rollout/src/ordinal.rs#L86-L96) | 继承前缀未写完的子 rollout 视为不完整并拒绝 |
 
 ### 其他客户端
 

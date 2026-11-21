@@ -25,6 +25,7 @@ from agent_session_bridge import (
     __version__,
     antigravity,
     antigravity_desktop,
+    codex_context,
     dsh,
     pi_context,
     stores,
@@ -116,7 +117,11 @@ def load(
         return zcode.parse(path)
     if source_format == "pi":
         return pi_context.parse(path)
-    session = load_session(path, None if source_format == "auto" else AgentFormat(source_format))
+    source = None if source_format == "auto" else AgentFormat(source_format)
+    if source_format == "codex" or (source is None and path.suffix == ".jsonl"):
+        session = codex_context.parse(path, source)
+    else:
+        session = load_session(path, source)
     if session.source_format.value not in FORMATS:
         raise SessionMigrateError(f"not a supported bridge format: {session.source_format.value}")
     if session.source_format == AgentFormat.CODEX:
@@ -250,6 +255,8 @@ def prepare(
             )
         ):
             events.append(event)
+        elif event.payload.get("source_record_type") == codex_context.INHERITED:
+            filtered[f"filtered:{codex_context.INHERITED}"] += 1
         else:
             filtered[f"filtered:{event.kind.value}"] += 1
     for field in ("model", "model_provider"):
